@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+
+# 构建日志、编辑器/工具的工作目录（不属于源码）
+build.log
+.workbuddy/
+
+# Cargo.lock 故意提交：这是个可执行程序，makepad 走 git dev 分支，
+# 不锁版本的话换台机器构建出来的东西可能不一样。

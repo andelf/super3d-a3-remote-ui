@@ -1,0 +1,23 @@
+[package]
+name = "starfish-control"
+version = "0.1.0"
+edition = "2021"
+
+# Makepad 2.0 桌面应用。
+# 依赖走 git dev 分支（依据 makepad-skills：makepad-widgets 用 git dev 分支，非 crates.io stable）。
+# 注意：请在你装了 VS Build Tools（MSVC）的开发机上 `cargo build`。
+# 若 dev 分支名不同，以 makepad 仓库实际分支为准（常见：dev / main）。
+[dependencies]
+makepad-widgets = { git = "https://github.com/makepad/makepad", branch = "dev" }
+# G-code 缩略图判定与归一化。
+# 切片器写进 G-code 的缩略图不一定是 PNG（Orca 可配 BMP，Prusa 也可能是 JPG），
+# 声明尺寸也不一定等于图片真实尺寸，所以要真解码再比面积、再统一转成 PNG。
+# 只开需要的解码器，避免拖进整套 tiff/webp 编解码。
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "bmp",
+    "jpeg",
+] }
+
+[profile.release]
+opt-level = 2
