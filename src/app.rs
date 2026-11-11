@@ -497,6 +497,9 @@ script_mod! {
     startup() do #(App::script_component(vm)) {
         ui: Root {
             main_window := Window {
+                // 不写这行，标题栏会显示 Makepad 的默认标题（"Makepad"），
+                // 跟本程序没关系；Windows 还会拿它当任务栏/Alt-Tab 的名字。
+                window.title: "Super3D A3 远程打印控制"
                 window.inner_size: vec2(1200, 820)
                 body +: {
                     root := RoundedView {
