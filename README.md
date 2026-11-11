@@ -1,10 +1,20 @@
-# Starfish Control
+# Super3D A3 远程打印控制（`super3d-a3-remote-ui`）
 
-基于 **Makepad 2.0** 的 3D 打印机控制端，目标设备为 Super3D / Snapmaker Luban 定制版
-（星鱼 A 系列），使用 **starfish-net** 协议（UDP 11221 发现 + TCP 7777 控制）。
+**Super3D A3 打印机的远程打印控制工具**：局域网内自动发现设备、上传 G-code、
+开始/暂停/停止打印、查看温度与进度，并可挂到 **OrcaSlicer 的后处理**上——
+切片导出结束后自动把文件送进界面，问一句「要不要现在打」。
+
+技术栈是 **Rust + Makepad 2.0**（原生 GUI，单个 exe，字体已内嵌）；
+通信走设备的 **starfish-net** 协议（UDP 11221 发现 + TCP 7777 控制，
+目标机型为 Super3D A3 / 星鱼 A 系列，Snapmaker Luban 定制固件）。
+协议层不依赖 GUI，同一份代码被图形界面和命令行共用。
 
 设计依据：`github.com/Zhanghandong/makepad-skills`（Makepad 2.0 技能集）。
-协议依据：抓包逐字节验证（见上层目录 `starfish-net-协议文档.md`、`starfish.py`）。
+协议依据：抓包逐字节验证，报文布局写在 `src/protocol/` 各模块的文档注释里。
+
+> **仓库名和可执行文件名不一样，这是故意的。**
+> 仓库叫 `super3d-a3-remote-ui`，编出来的程序仍是 `starfish-control.exe`：
+> 后处理脚本的路径是写死在 OrcaSlicer 配置里的，改名会让已经配好的导出流程失效。
 
 ## 功能
 
@@ -224,7 +234,9 @@ starfish-control.exe --dump-env
 - `cargo build --release` / `cargo test --release` 在本机（MSVC + VS Build Tools）通过，
   63 个单测通过、1 个 `ignored`（`header::real_gcode` 需要 `SF_GCODE` 指向真实切片文件）。
 - `makepad-widgets` 走 git `dev` 分支，`Cargo.lock` 已锁定 commit。
-- 剩余编译警告都是 dead_code（协议层预留字段）与 `protocol/mod.rs` 的冗余 re-export。
+- 本工程自身**零编译警告**：尚未接界面的协议命令与解析模块都就地标了
+  `#[allow(dead_code)]` 并写明理由（见各文件注释），不是靠全局 `allow` 糊过去。
+- `cargo fmt --check` 通过。
 
 ## 字体内嵌（分发必读）
 
@@ -266,7 +278,7 @@ Makepad 的字体是按资源路径读文件的：`register_crate_resource_path`
 ## 目录结构
 
 ```
-starfish-control/
+super3d-a3-remote-ui/            # 仓库名；可执行文件仍叫 starfish-control.exe
   Cargo.toml
   assets/fonts/        # 内嵌字体（见上）
   src/
