@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-第三方字体（assets/fonts/）不适用上述 MIT 条款，按其各自授权分发：
-
-  LXGWWenKaiRegular.ttf         LXGW WenKai            SIL Open Font License 1.1
-  IBMPlexSans-Text.ttf          IBM Plex Sans          SIL Open Font License 1.1
-  NotoSans-Regular.ttf          Noto Sans              SIL Open Font License 1.1
-  jetbrains_mono_variable.ttf   JetBrains Mono         SIL Open Font License 1.1
-  LiberationMono-Regular.ttf    Liberation Mono        SIL Open Font License 1.1
-  fa-solid-900.ttf              Font Awesome Free      SIL OFL 1.1 / CC BY 4.0 / MIT

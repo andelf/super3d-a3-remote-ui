@@ -95,4 +95,5 @@ OrcaSlicer → 打印设置 → 输出 → **后处理脚本**，填 exe 的完�
 
 `assets/fonts/` 下的字体**不适用 MIT**，各自按其原授权分发（均为 SIL OFL 1.1
 或同等可再分发协议）：LXGW WenKai（中文）、IBM Plex Sans、Noto Sans、
-JetBrains Mono、Liberation Mono、Font Awesome Free。
+JetBrains Mono、Liberation Mono、Font Awesome Free。详见
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
