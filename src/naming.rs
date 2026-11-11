@@ -1,4 +1,4 @@
-//! 复现切片器给导出文件起的名字。
+//! 让上传名和切片器真实导出的文件名一致。
 //!
 //! # 为什么需要
 //!
@@ -12,9 +12,22 @@
 //! 才由 Orca 写出来的，脚本里根本拿不到那个路径 —— 所以「先写真实文件再交给界面」
 //! 这条路走不通。直接拿临时文件名当上传名，用户看到的就是 `.11596.1.gcode.pp`。
 //!
-//! # 怎么算
+//! # 主路径：直接问切片器（环境变量）
 //!
-//! Orca 在同一个会话目录里留了两样东西，恰好够我们把名字一模一样地算出来：
+//! 实测 Orca 调用后处理脚本时注入了 661 个 `SLIC3R_*` 变量，其中
+//! `SLIC3R_PP_OUTPUT_NAME` 就是**最终导出文件的完整路径**：
+//!
+//! ```text
+//! SLIC3R_PP_OUTPUT_NAME = C:\Users\andel\Downloads\Clip S1_PETG_43m31s.gcode
+//! ```
+//!
+//! 只取它的 `file_name`。**绝不拿这个路径去读文件**：脚本还在跑，那个文件
+//! 此刻并不存在，内容仍然必须走 `handoff::stage_copy` 落地的副本。
+//!
+//! # 兜底：按命名模板反推
+//!
+//! 环境变量缺失时（手工调用、别的切片器、Orca 改了语义），退回从会话目录反推。
+//! Orca 会在会话目录里留两样东西：
 //!
 //! | 文件 | 作用 |
 //! |---|---|
@@ -32,10 +45,49 @@
 //!
 //! 三样缺一律返回 `None`：宁可退回原文件名，也不要拼出一个看起来像真的、
 //! 实际对不上的名字 —— 那比 `xxx.pp` 更误导人。
+//!
+//! 这条兜底**并不稳定**：真机上见过没有 `origin.txt` 的会话目录（多 plate 导出），
+//! 两道推导会同时失败。这正是把环境变量提为主路径的原因。
 
 use std::path::{Path, PathBuf};
 
 use crate::protocol::header::HeaderInfo;
+
+/// 切片器注入的「最终导出文件完整路径」变量名。
+pub const OUTPUT_NAME_ENV: &str = "SLIC3R_PP_OUTPUT_NAME";
+
+/// 主路径：读切片器注入的导出文件名，只取最后一段。
+///
+/// 用 `var_os` + `to_string_lossy`：Windows 环境变量不保证是合法 UTF-8，
+/// `var()` 遇到非法字节会返回 `Err`（甚至在某些封装里 panic），不能让一个
+/// 名字把整个后处理搞挂。取不到/不像文件名就 `None`，交给调用方走兜底。
+pub fn env_export_name() -> Option<String> {
+    let raw = std::env::var_os(OUTPUT_NAME_ENV)?;
+    export_name_from_path(&raw.to_string_lossy())
+}
+
+/// 纯函数：把 `SLIC3R_PP_OUTPUT_NAME` 的值变成可用的文件名。
+///
+/// 只做保守清理，不改写语义：真实导出名里可能有中文、空格、括号，
+/// 这些交给 `app::sanitize_name` 在落盘/上传前统一处理。
+fn export_name_from_path(value: &str) -> Option<String> {
+    // 两边认 `\` 和 `/`，不依赖当前平台；带引号的写法也见过，顺手剥掉。
+    let value = value.trim().trim_matches('"');
+    let name = value.rsplit(|c| c == '/' || c == '\\').next()?.trim();
+    // 万一哪天 Orca 把 `.pp` 中间名塞进来，至少别把后缀带到界面上。
+    let name = name.strip_suffix(".pp").unwrap_or(name);
+    // 点开头在设备上 = 隐藏文件，列表接口不列，传了也白传。
+    let name = name.trim_start_matches('.');
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.len() > 200
+        || name.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
 
 /// 按切片器的命名模板算出导出文件名（含扩展名）。任何一环拿不到就 `None`。
 pub fn orca_export_name(gcode: &Path, info: &HeaderInfo) -> Option<String> {
@@ -210,6 +262,25 @@ pub fn stamp(filename: &str, stamp: &str) -> String {
     format!("{stem}{tail}")
 }
 
+/// 秒级时间戳 + 同秒序号，返回 `(要加进名字的戳, 新序号)`。
+///
+/// 多 plate 一次导出会在几秒内连着交来好几个文件；若它们恰好在同一秒开始上传，
+/// 光靠秒级时间戳又会撞成同名，设备端同名不覆盖，等于保护失效。
+/// 所以同一秒内第 2、3… 个补成 `20261111-133822-2` / `-3`。
+pub fn next_stamp(now: &str, last: &str, seq: u32) -> (String, u32) {
+    let next = if now == last {
+        seq.saturating_add(1).max(2)
+    } else {
+        1
+    };
+    let full = if next == 1 {
+        now.to_string()
+    } else {
+        format!("{now}-{next}")
+    };
+    (full, next)
+}
+
 /// 当前本地时间的时间戳 `YYYYMMDD-HHmmss`。
 pub fn timestamp_now() -> String {
     let (y, mo, d, h, mi, s) = local_now();
@@ -313,6 +384,66 @@ mod tests {
             time_s: seconds,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn env_output_path_yields_only_the_filename() {
+        // 真机日志里那一行的原样
+        assert_eq!(
+            export_name_from_path(r"C:\Users\andel\Downloads\Clip S1_PETG_43m31s.gcode").as_deref(),
+            Some("Clip S1_PETG_43m31s.gcode")
+        );
+        // 正斜杠、裸文件名、中文、括号都原样保留
+        assert_eq!(
+            export_name_from_path("/home/me/导出/Part 1 (16).gcode").as_deref(),
+            Some("Part 1 (16).gcode")
+        );
+        assert_eq!(export_name_from_path("a.gcode").as_deref(), Some("a.gcode"));
+        assert_eq!(
+            export_name_from_path(r#""C:\tmp\a.gcode""#).as_deref(),
+            Some("a.gcode")
+        );
+    }
+
+    #[test]
+    fn env_output_path_rejects_junk() {
+        assert_eq!(export_name_from_path(""), None);
+        assert_eq!(export_name_from_path("   "), None);
+        // 只给了目录，没有文件名
+        assert_eq!(export_name_from_path(r"C:\Users\andel\Downloads\"), None);
+        assert_eq!(export_name_from_path("..."), None);
+        assert_eq!(export_name_from_path("a\0b.gcode"), None);
+        assert_eq!(export_name_from_path(&"A".repeat(300)), None);
+    }
+
+    #[test]
+    fn env_name_drops_pp_and_hidden_dot() {
+        assert_eq!(
+            export_name_from_path(r"C:\tmp\.11596.2.gcode.pp").as_deref(),
+            Some("11596.2.gcode")
+        );
+    }
+
+    #[test]
+    fn same_second_uploads_get_a_suffix() {
+        let s = "20261111-133822";
+        assert_eq!(next_stamp(s, "", 0), (s.to_string(), 1));
+        assert_eq!(next_stamp(s, s, 1), (format!("{s}-2"), 2));
+        assert_eq!(next_stamp(s, s, 2), (format!("{s}-3"), 3));
+        // 换一秒就重置，别一路加到 -99
+        assert_eq!(next_stamp("20261111-133823", s, 3), ("20261111-133823".to_string(), 1));
+    }
+
+    #[test]
+    fn real_export_name_gets_our_second_precise_stamp() {
+        // 端到端：切片器给的名字里 `43m31s` 是**打印时长**，不是时间戳，
+        // 同名重切会撞上设备端的旧文件缓存，所以必须再缀一个我们的秒级时间戳。
+        let name = export_name_from_path(r"C:\Users\andel\Downloads\Clip S1_PETG_43m31s.gcode")
+            .expect("应该解析得出来");
+        assert_eq!(
+            stamp(&name, "20261111-133822"),
+            "Clip S1_PETG_43m31s_20261111-133822.gcode"
+        );
     }
 
     #[test]

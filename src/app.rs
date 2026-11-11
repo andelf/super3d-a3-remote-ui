@@ -1636,6 +1636,14 @@ pub struct App {
     /// 命令行落地的交接副本目录，上传收尾时删掉（见 `handoff::stage_copy`）。
     #[rust]
     staged_dir: Option<std::path::PathBuf>,
+    /// 上一次给上传名加的时间戳，以及同一秒内的序号。
+    ///
+    /// 戳精确到秒就够用，但多 plate 一次导出可能在同一秒里连着上传好几个文件，
+    /// 光靠秒会撞回同名（设备同名不覆盖、照旧打旧的）。撞了就补 `-2` / `-3`。
+    #[rust]
+    last_stamp: String,
+    #[rust]
+    stamp_seq: u32,
 }
 
 /// 上传成功之后做什么。
@@ -2626,8 +2634,13 @@ impl App {
         // 严重时名字被截断到和我们记录的名字对不上（后续 print_start 就找不到文件）。
         let (name, _ascii_fixed) = sanitize_name(raw_name);
         // 设备端**同名不会覆盖**：新内容传上去，开始打印还是上一次的刀路（实测）。
-        // 所以每次上传都缀个时间戳，让名字天然唯一。
-        let name = naming::stamp(&name, &naming::timestamp_now());
+        // 所以每次上传都缀一个本地时间戳（精确到秒），让名字天然唯一。
+        // 切片器给的名字里那种 `43m31s` 是**打印时长**，不能当时间戳用。
+        let now = naming::timestamp_now();
+        let (full_stamp, seq) = naming::next_stamp(&now, &self.last_stamp, self.stamp_seq);
+        self.last_stamp = now;
+        self.stamp_seq = seq;
+        let name = naming::stamp(&name, &full_stamp);
 
         let body = converted.output;
         if body.trim().is_empty() {
@@ -4036,6 +4049,20 @@ mod tests {
         assert!(changed);
         assert!(name.is_ascii(), "必须是纯 ASCII：{name}");
         assert!(name.ends_with(".gcode"), "{name}");
+    }
+
+    #[test]
+    fn slicer_export_name_becomes_a_stamped_device_name() {
+        // 环境变量给的 `Clip S1_PETG_43m31s.gcode` 走到界面后的最终形态。
+        // 中文导出名会被固件限制转成 ASCII，但时间戳照样加得上。
+        for raw in ["Clip S1_PETG_43m31s.gcode", "切片 1_PETG_6m4s.gcode"] {
+            let (name, _) = sanitize_name(raw);
+            let stamped = crate::naming::stamp(&name, "20261111-133822");
+            assert!(stamped.ends_with("_20261111-133822.gcode"), "{raw} → {stamped}");
+            assert!(stamped.len() <= 64, "{raw} → {stamped}");
+            assert!(!stamped.starts_with('.'), "{raw} → {stamped}");
+            assert!(stamped.is_ascii(), "{raw} → {stamped}");
+        }
     }
 
     #[test]

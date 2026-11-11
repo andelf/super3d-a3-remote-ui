@@ -39,6 +39,12 @@ pub fn run_if_postprocess() -> Option<i32> {
         return None;
     }
     let path = cli.target_file()?.to_string();
+
+    // 确定是后处理调用了，先把切片器塞进来的环境变量原样留一份。
+    // 必须在任何 IO / 交接之前做：这是「脚本被调起来那一刻」的环境，
+    // 后面不管成功失败都能查。写日志失败不影响后处理的退出码。
+    let _ = crate::log::capture_postprocess(&path);
+
     Some(hand_off(cli, path))
 }
 
@@ -74,11 +80,18 @@ fn hand_off(cli: Cli, raw_path: String) -> i32 {
         .to_string();
 
     // 切片器传的是它自己的临时文件（`Metadata\.11596.1.gcode.pp`），拿它当上传名
-    // 界面上就是一串看不懂的点号数字。按切片器的命名模板算回真实导出名：
-    // `.11596.1.gcode.pp` → `Part 1 (16)_PETG_6m4s.gcode`。
-    let upload_name = crate::naming::orca_export_name(&path, &converted.info)
-        .or_else(|| crate::naming::origin_based_name(&path))
-        .unwrap_or_else(|| strip_pp(&name));
+    // 界面上就是一串看不懂的点号数字。名字优先问切片器要：它在环境变量里直接
+    // 给了真实导出文件的完整路径，比从内部目录反推准得多（实测多 plate 导出时
+    // 会话目录里连 origin.txt 都没有，反推会整条失效）。
+    // 注意：**只取名字，绝不读那个路径** —— 文件要等本进程退出后才由 Orca 写出。
+    let from_env = crate::naming::env_export_name();
+    if let Some(n) = &from_env {
+        eprintln!(
+            "[starfish] 导出名来自 {}：{n}（只取名字，不读那个文件）",
+            crate::naming::OUTPUT_NAME_ENV
+        );
+    }
+    let upload_name = resolve_upload_name(&path, &converted.info, &name, from_env);
 
     // ── 3. `--rewrite`：把结果写回原文件 ─────────────────────────────────
     if cli.rewrite {
@@ -165,6 +178,25 @@ fn hand_off(cli: Cli, raw_path: String) -> i32 {
         let _ = std::fs::remove_dir_all(dir);
     }
     0
+}
+
+/// 上传名的四级来源，按可靠度排序。
+///
+/// 抽成纯函数是为了能单测：环境变量用参数注入，不去动进程全局环境
+/// （单测是并行的，直接 `set_var` 会互相踩）。
+fn resolve_upload_name(
+    gcode: &Path,
+    info: &header::HeaderInfo,
+    fallback: &str,
+    from_env: Option<String>,
+) -> String {
+    // 1 = from_env（切片器明说的真实导出名）；2 = 按 filename_format 模板反推；
+    // 3 = 只剩 origin.txt 时给个「模型名.gcode」；4 = 全失败，至少别把 `.pp`
+    // 和点前缀带上去。
+    from_env
+        .or_else(|| crate::naming::orca_export_name(gcode, info))
+        .or_else(|| crate::naming::origin_based_name(gcode))
+        .unwrap_or_else(|| strip_pp(fallback))
 }
 
 /// 去掉切片器临时文件的 `.pp` 后缀（`xxx.gcode.pp` → `xxx.gcode`）。
@@ -335,5 +367,46 @@ mod tests {
         assert_eq!(strip_pp(".11596.1.gcode.pp"), "11596.1.gcode");
         assert_eq!(strip_pp("a.gcode.pp"), "a.gcode");
         assert_eq!(strip_pp("plain.gcode"), "plain.gcode");
+    }
+
+    #[test]
+    fn env_name_wins_and_template_is_the_fallback() {
+        let dir = std::env::temp_dir().join(format!("starfish-handoff-{}-name", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Metadata")).unwrap();
+        std::fs::write(dir.join("origin.txt"), r"C:\tmp\Part 1 (16).3mf").unwrap();
+        std::fs::write(
+            dir.join("_temp_1.config"),
+            r#"{"filename_format": "{input_filename_base}_{filament_type[initial_tool]}_{print_time}.gcode", "filament_type": ["PETG"]}"#,
+        )
+        .unwrap();
+        let gcode = dir.join("Metadata").join(".11596.1.gcode.pp");
+        let info = header::HeaderInfo {
+            time_s: 2611.0,
+            ..Default::default()
+        };
+
+        // 有环境变量：直接用，哪怕反推也能算出个名字
+        assert_eq!(
+            resolve_upload_name(
+                &gcode,
+                &info,
+                ".11596.1.gcode.pp",
+                Some("Clip S1_PETG_43m31s.gcode".into())
+            ),
+            "Clip S1_PETG_43m31s.gcode"
+        );
+        // 没有环境变量：退回模板反推
+        assert_eq!(
+            resolve_upload_name(&gcode, &info, ".11596.1.gcode.pp", None),
+            "Part 1 (16)_PETG_43m31s.gcode"
+        );
+        // 会话目录也不存在：最后兜底，且不带点前缀
+        let orphan = Path::new("C:/nowhere/.11596.2.gcode.pp");
+        assert_eq!(
+            resolve_upload_name(orphan, &info, ".11596.2.gcode.pp", None),
+            "11596.2.gcode"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
