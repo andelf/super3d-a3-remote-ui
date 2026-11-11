@@ -116,7 +116,10 @@ fn hand_off(cli: Cli, raw_path: String) -> i32 {
     let origin = display_path(&path);
     let staged = stage_copy(&upload_name, &converted.output);
     if staged.is_none() {
-        eprintln!("[starfish] 交接副本落地失败（{}），界面只能直接读原路径", staging_root().display());
+        eprintln!(
+            "[starfish] 交接副本落地失败（{}），界面只能直接读原路径",
+            staging_root().display()
+        );
     }
     let req = Request {
         path: staged
@@ -338,7 +341,10 @@ mod tests {
     fn stage_copy_writes_content_under_its_own_root() {
         let out = ";TIME:60\nG28\n";
         let p = stage_copy("切片 1.gcode", out).expect("应该能落地");
-        assert!(p.starts_with(staging_root()), "副本必须在自己的根目录下：{p:?}");
+        assert!(
+            p.starts_with(staging_root()),
+            "副本必须在自己的根目录下：{p:?}"
+        );
         assert_eq!(p.file_name().unwrap().to_str().unwrap(), "切片 1.gcode");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), out);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
@@ -371,7 +377,8 @@ mod tests {
 
     #[test]
     fn env_name_wins_and_template_is_the_fallback() {
-        let dir = std::env::temp_dir().join(format!("starfish-handoff-{}-name", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("starfish-handoff-{}-name", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Metadata")).unwrap();
         std::fs::write(dir.join("origin.txt"), r"C:\tmp\Part 1 (16).3mf").unwrap();

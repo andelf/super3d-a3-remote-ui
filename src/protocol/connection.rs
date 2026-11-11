@@ -43,13 +43,8 @@ pub fn discover(timeout: Duration) -> io::Result<Vec<Device>> {
                 let msg = String::from_utf8_lossy(&buf[..n]);
                 // 期望：`***XC A <serial>`
                 if msg.starts_with("***XC A") {
-                    let serial = msg
-                        .split_whitespace()
-                        .nth(2)
-                        .unwrap_or("")
-                        .to_string();
-                    if !serial.is_empty()
-                        && !devices.iter().any(|d| d.ip == addr.ip().to_string())
+                    let serial = msg.split_whitespace().nth(2).unwrap_or("").to_string();
+                    if !serial.is_empty() && !devices.iter().any(|d| d.ip == addr.ip().to_string())
                     {
                         devices.push(Device {
                             ip: addr.ip().to_string(),
@@ -58,7 +53,9 @@ pub fn discover(timeout: Duration) -> io::Result<Vec<Device>> {
                     }
                 }
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            Err(ref e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 break;
             }
             Err(_) => break,
@@ -98,15 +95,12 @@ impl Connection {
     /// 这样连不上时不会把调用线程拖进内核的 SYN 重试。
     pub fn connect_timeout(host: &str, port: u16, timeout: Duration) -> io::Result<Connection> {
         use std::net::ToSocketAddrs;
-        let addr = (host, port)
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("无法解析地址 {host}:{port}"),
-                )
-            })?;
+        let addr = (host, port).to_socket_addrs()?.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("无法解析地址 {host}:{port}"),
+            )
+        })?;
         let stream = TcpStream::connect_timeout(&addr, timeout)?;
         Self::from_stream(stream)
     }
@@ -189,6 +183,10 @@ impl Connection {
     }
 
     /// 取走等待期间顺手存下的最新状态帧（仅 8/0）。
+    ///
+    /// `wait_ack` 期间收到的状态帧不会丢，但界面目前直接读 `recv` 的返回值，
+    /// 这里暂时没人取——留着是为了将来做「等 ACK 时也能刷新温度/进度」。
+    #[allow(dead_code)]
     pub fn take_status(&self) -> Option<Vec<u8>> {
         self.status_slot.lock().ok().and_then(|mut s| s.take())
     }
@@ -288,6 +286,12 @@ impl Connection {
     pub fn disconnect(&self) -> io::Result<()> {
         self.send(&frame::pkt(8, 1, self.client_id(), &[]))
     }
+    // ── 命令面 ──
+    //
+    // 下面这批命令都按抓包逐字节验证过，但界面还没接按钮（见 README「已知问题」）。
+    // 需要时才接线，所以保留实现，各自标 `allow(dead_code)`；不要因为警告就删掉——
+    // 删了等于把验证结论丢掉，接线时又得重抓一遍包。
+    #[allow(dead_code)]
     pub fn get_printing_filename(&self) -> io::Result<()> {
         self.send(&frame::pkt(8, 2, self.client_id(), &[]))
     }
@@ -331,12 +335,15 @@ impl Connection {
         b.push(0);
         self.send(&frame::pkt(11, 1, self.client_id(), &b))
     }
+    #[allow(dead_code)]
     pub fn print_stop(&self) -> io::Result<()> {
         self.send(&frame::pkt(11, 2, self.client_id(), &[]))
     }
+    #[allow(dead_code)]
     pub fn print_pause(&self) -> io::Result<()> {
         self.send(&frame::pkt(11, 3, self.client_id(), &[]))
     }
+    #[allow(dead_code)]
     pub fn print_resume(&self) -> io::Result<()> {
         self.send(&frame::pkt(11, 4, self.client_id(), &[]))
     }
@@ -344,8 +351,9 @@ impl Connection {
     pub fn control_home(&self) -> io::Result<()> {
         self.send(&frame::pkt(12, 3, self.client_id(), &[]))
     }
+    #[allow(dead_code)]
     pub fn control_home_axis(&self, axis: u8) -> io::Result<()> {
-        self.send(&frame::pkt(12,4, self.client_id(), &[axis]))
+        self.send(&frame::pkt(12, 4, self.client_id(), &[axis]))
     }
     pub fn control_fan(&self, index: u8, speed: u8) -> io::Result<()> {
         self.send(&frame::pkt(12, 1, self.client_id(), &[index, speed]))
@@ -368,11 +376,13 @@ impl Connection {
         b.extend_from_slice(&amount_um.to_le_bytes());
         self.send(&frame::pkt(12, 7, self.client_id(), &b))
     }
+    #[allow(dead_code)]
     pub fn control_retract(&self, index: u8, amount_um: i32) -> io::Result<()> {
         let mut b = vec![index];
         b.extend_from_slice(&amount_um.to_le_bytes());
         self.send(&frame::pkt(12, 8, self.client_id(), &b))
     }
+    #[allow(dead_code)]
     pub fn control_stop_stepper(&self) -> io::Result<()> {
         self.send(&frame::pkt(12, 9, self.client_id(), &[]))
     }
@@ -381,6 +391,8 @@ impl Connection {
         self.send(&frame::pkt(12, 10, self.client_id(), &[]))
     }
 
+    /// 固件升级（13/1）。命令已验证，界面不提供入口——刷错固件会把机器变砖。
+    #[allow(dead_code)]
     pub fn firmware_begin(&self, size: u32, name: &str) -> io::Result<()> {
         let mut b = size.to_le_bytes().to_vec();
         b.extend_from_slice(name.as_bytes());
@@ -551,10 +563,7 @@ mod tests {
         let c = Connection::connect("127.0.0.1", printer.port).expect("connect");
         // 握手：clientId 只从设备回包里下发。
         let _ = c.status_query();
-        assert!(
-            c.recv(Duration::from_secs(2)).is_some(),
-            "握手没收到状态帧"
-        );
+        assert!(c.recv(Duration::from_secs(2)).is_some(), "握手没收到状态帧");
         assert_eq!(c.client_id(), CID, "clientId 没记住");
         c
     }
@@ -584,16 +593,13 @@ mod tests {
         }
 
         conn.upload_complete().unwrap();
-        conn.wait_ack(9, 3, Duration::from_secs(2)).expect("9/3 没 ACK");
+        conn.wait_ack(9, 3, Duration::from_secs(2))
+            .expect("9/3 没 ACK");
 
         assert!(!printer.tripped(), "设备看门狗还是咬断了连接");
         assert!(printer.finished(), "没收到 9/3");
         assert_eq!(printer.received(), data, "机内收到的字节和发出的不一致");
-        assert!(
-            printer.beats() >= 2,
-            "心跳次数太少：{}",
-            printer.beats()
-        );
+        assert!(printer.beats() >= 2, "心跳次数太少：{}", printer.beats());
     }
 
     /// 对照组：不发 8/0 时，假打印机必须把连接掐掉。

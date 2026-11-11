@@ -53,6 +53,9 @@ impl Eta {
     }
 
     /// 当前这个数字是不是来自切片器总时长（`false` = 现场测速外推的，更糙）。
+    ///
+    /// 界面改用 `total().is_some()` 判断，这里只留给单测做语义断言。
+    #[allow(dead_code)]
     pub fn from_total(&self) -> bool {
         self.total_s.is_some()
     }
@@ -61,12 +64,6 @@ impl Eta {
     pub fn reset_progress(&mut self) {
         self.samples.clear();
         self.last_pct = None;
-    }
-
-    /// 彻底归零（断开连接 / 打印结束）。
-    pub fn reset(&mut self) {
-        self.reset_progress();
-        self.total_s = None;
     }
 
     /// 喂一帧进度。`t` 是秒（起点随意，只要单调），`pct` 是 0..100。

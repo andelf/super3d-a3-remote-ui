@@ -100,7 +100,13 @@ impl PrintStatus {
     }
 }
 
+/// 39 字节状态帧（cmd 8/0）解析出来的全部字段。
+///
+/// 协议里有的字段这里都留着（`client_id` / `scr_print_state` / `pos_e` / `end_stop`
+/// 界面暂时用不到），一来解析逻辑与报文布局一一对应、便于对照抓包，
+/// 二来将来做「挤出机位置」「限位状态」时直接可用。
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct DeviceStatus {
     pub client_id: u8,
     pub print_status: PrintStatus,

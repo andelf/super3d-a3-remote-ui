@@ -57,11 +57,19 @@ pub struct Thumbnail {
     /// 解码后的 PNG 字节，可直接交给 UI 显示。
     pub png: Vec<u8>,
     /// 来源描述，例如 `block 300x300` / `inline`。
+    ///
+    /// 界面不显示；只有被 `#[ignore]` 的诊断测试 `header::real_gcode` 会打印出来，
+    /// 用于核对「多张缩略图时挑的是哪一张」。
+    #[allow(dead_code)]
     pub source: String,
 }
 
 impl Thumbnail {
     /// 像素面积，用来在多个缩略图里挑最大的。
+    ///
+    /// `pick_best_thumbnail` 在**解码阶段**就顺手比了面积（那时还没有 `Thumbnail`），
+    /// 所以这里是给「已构造好的若干 Thumbnail 再比较一次」留的，暂无调用方。
+    #[allow(dead_code)]
     pub fn area(&self) -> u64 {
         self.width as u64 * self.height as u64
     }
@@ -71,6 +79,8 @@ impl Thumbnail {
 #[derive(Debug, Clone, Default)]
 pub struct HeaderInfo {
     pub time_s: f64,
+    /// 层高（mm）。头部里有就解析出来，界面暂时不展示。
+    #[allow(dead_code)]
     pub layer_height: f64,
     pub nozzle_temp: f64,
     pub bed_temp: f64,
@@ -622,8 +632,8 @@ pub fn convert(text: &str, material_override: Option<&str>) -> Conversion {
     // ② 元信息
     let map = collect_kv(text);
 
-    let mut time_s = pick_number(&map, &["time", "estimated_time(s)", "estimated time (s)"])
-        .unwrap_or(0.0);
+    let mut time_s =
+        pick_number(&map, &["time", "estimated_time(s)", "estimated time (s)"]).unwrap_or(0.0);
     if time_s <= 0.0 {
         if let Some(v) = pick_value(
             &map,
@@ -774,11 +784,20 @@ pub fn convert(text: &str, material_override: Option<&str>) -> Conversion {
         thumb_line,
         format!(";file_total_lines: {line_count}"),
         format!(";estimated_time(s): {time_s:.2}"),
-        format!(";nozzle_temperature(°C): {}", fmt_num(nozzle_temp.unwrap_or(0.0))),
-        format!(";nozzle_1_temperature(°C): {}", fmt_num(NOZZLE_1_TEMPERATURE)),
+        format!(
+            ";nozzle_temperature(°C): {}",
+            fmt_num(nozzle_temp.unwrap_or(0.0))
+        ),
+        format!(
+            ";nozzle_1_temperature(°C): {}",
+            fmt_num(NOZZLE_1_TEMPERATURE)
+        ),
         format!(";nozzle_0_diameter(mm): {}", fmt_num(NOZZLE_0_DIAMETER)),
         format!(";nozzle_1_diameter(mm): {}", fmt_num(NOZZLE_1_DIAMETER)),
-        format!(";build_plate_temperature(°C): {}", fmt_num(bed_temp.unwrap_or(0.0))),
+        format!(
+            ";build_plate_temperature(°C): {}",
+            fmt_num(bed_temp.unwrap_or(0.0))
+        ),
         format!(";work_speed(mm/minute): {}", fmt_num(WORK_SPEED_MM_MIN)),
         format!(";max_x(mm): {}", fmt_num(bounds.max_x)),
         format!(";max_y(mm): {}", fmt_num(bounds.max_y)),
@@ -1008,14 +1027,23 @@ mod tests {
         println!("summary   : {}", c.info.summary());
         println!("time_s    : {:.1}", c.info.time_s);
         println!("layer_h   : {}", c.info.layer_height);
-        println!("temps     : nozzle {:.0} / bed {:.0}", c.info.nozzle_temp, c.info.bed_temp);
+        println!(
+            "temps     : nozzle {:.0} / bed {:.0}",
+            c.info.nozzle_temp, c.info.bed_temp
+        );
         println!("material  : {}", c.info.material);
         println!("length_m  : {:.3}", c.info.length_m);
         println!("weight_g  : {:.2}", c.info.weight_g);
         println!("bounds    : {:?}", c.info.bounds);
         println!("line_count: {}", c.info.line_count);
         match &c.info.thumbnail {
-            Some(t) => println!("thumbnail : {}x{} {} bytes from {}", t.width, t.height, t.png.len(), t.source),
+            Some(t) => println!(
+                "thumbnail : {}x{} {} bytes from {}",
+                t.width,
+                t.height,
+                t.png.len(),
+                t.source
+            ),
             None => println!("thumbnail : none"),
         }
         println!("--- first 20 header lines ---");

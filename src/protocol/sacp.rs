@@ -5,6 +5,9 @@
 //!
 //! 此处仅保留魔数与头部结构作为后续扩展参考，不实现收发。
 //! 若需要支持其它运行 SACP 的 Snapmaker 机型，再在此补全 Dispatcher / Request / Response。
+//!
+//! 因为整模块都是「未接线的参考定义」，这里统一放行 dead_code。
+#![allow(dead_code)]
 
 pub const SACP_SOF: [u8; 2] = [0xAA, 0x55];
 pub const SACP_HEADER_LEN: usize = 13;

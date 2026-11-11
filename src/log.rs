@@ -114,7 +114,15 @@ fn is_slicer_var(key: &str) -> bool {
 /// 切片器变量本来就整节单列了，这里不需要再靠 `PP_` 捞一遍。
 fn is_path_hint(key: &str) -> bool {
     let k = key.to_ascii_uppercase();
-    let output_words = ["OUTPUT", "GCODE", "EXPORT", "FILENAME", "FILEPATH", "FILE_NAME", "OUT_DIR"];
+    let output_words = [
+        "OUTPUT",
+        "GCODE",
+        "EXPORT",
+        "FILENAME",
+        "FILEPATH",
+        "FILE_NAME",
+        "OUT_DIR",
+    ];
     output_words.iter().any(|w| k.contains(w))
         || (is_slicer_var(key) && (k.contains("NAME") || k.contains("PATH")))
 }
@@ -163,7 +171,10 @@ fn clip(value: &str, max: usize) -> String {
 
 fn display_value(key: &str, value: &str, full: bool) -> String {
     if !full && should_redact(key) {
-        return format!("<已脱敏，{} 字符；设 STARFISH_LOG_FULL_ENV=1 可看全值>", value.chars().count());
+        return format!(
+            "<已脱敏，{} 字符；设 STARFISH_LOG_FULL_ENV=1 可看全值>",
+            value.chars().count()
+        );
     }
     clip(&escape(value), MAX_VALUE_CHARS)
 }
@@ -221,8 +232,10 @@ fn pretty_now() -> String {
     }
 }
 
-const RULE: &str = "================================================================================\n";
-const THIN: &str = "--------------------------------------------------------------------------------\n";
+const RULE: &str =
+    "================================================================================\n";
+const THIN: &str =
+    "--------------------------------------------------------------------------------\n";
 
 /// 纯函数：给一份变量表 + 上下文，产出日志文本。测试直接喂假数据，不碰进程环境。
 ///
@@ -251,13 +264,14 @@ fn render_snapshot(vars: &[(String, String)], ctx: &SnapshotCtx) -> String {
     s.push_str(&format!("  日志目录 : {}\n", ctx.log_dir));
     s.push_str(&format!(
         "  脱敏     : {}\n",
-        if ctx.full_env { "已关闭（全值）" } else { "开启" }
+        if ctx.full_env {
+            "已关闭（全值）"
+        } else {
+            "开启"
+        }
     ));
 
-    let slicer: Vec<_> = vars
-        .iter()
-        .filter(|(k, _)| is_slicer_var(k))
-        .collect();
+    let slicer: Vec<_> = vars.iter().filter(|(k, _)| is_slicer_var(k)).collect();
     let hints: Vec<_> = vars
         .iter()
         .filter(|(k, _)| is_path_hint(k) && !is_slicer_var(k))
@@ -274,10 +288,7 @@ fn render_snapshot(vars: &[(String, String)], ctx: &SnapshotCtx) -> String {
     );
     section(
         &mut s,
-        &format!(
-            "其它可能含输出文件名/路径的变量  共 {} 个",
-            hints.len()
-        ),
+        &format!("其它可能含输出文件名/路径的变量  共 {} 个", hints.len()),
         &hints,
         ctx.full_env,
     );
@@ -291,12 +302,7 @@ fn render_snapshot(vars: &[(String, String)], ctx: &SnapshotCtx) -> String {
     s
 }
 
-fn section(
-    out: &mut String,
-    title: &str,
-    picked: &[&(String, String)],
-    full: bool,
-) {
+fn section(out: &mut String, title: &str, picked: &[&(String, String)], full: bool) {
     out.push_str(THIN);
     out.push_str(&format!("■ {title}\n"));
     if picked.is_empty() {
@@ -349,7 +355,10 @@ mod tests {
     fn vars() -> Vec<(String, String)> {
         vec![
             ("SLIC3R_FILAMENT_TYPE".into(), "PETG".into()),
-            ("SLIC3R_PP_OUTPUT_NAME".into(), "Part 1_PETG_6m4s.gcode".into()),
+            (
+                "SLIC3R_PP_OUTPUT_NAME".into(),
+                "Part 1_PETG_6m4s.gcode".into(),
+            ),
             ("ORCA_EXPORT_DIR".into(), r"C:\Users\me\Downloads".into()),
             ("PATH".into(), r"C:\Windows".into()),
             ("USERNAME".into(), "me".into()),
@@ -384,7 +393,10 @@ mod tests {
     #[test]
     fn sensitive_values_are_redacted_but_can_be_opted_out() {
         assert!(display_value("MY_API_TOKEN", "supersecret", false).contains("已脱敏"));
-        assert_eq!(display_value("MY_API_TOKEN", "supersecret", true), "supersecret");
+        assert_eq!(
+            display_value("MY_API_TOKEN", "supersecret", true),
+            "supersecret"
+        );
         assert_eq!(display_value("SLIC3R_FILAMENT_TYPE", "PETG", false), "PETG");
     }
 

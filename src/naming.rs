@@ -368,7 +368,8 @@ mod tests {
     use super::*;
 
     fn fake_session(tag: &str, origin: &str, format: &str, filament: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("starfish-naming-{}-{tag}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("starfish-naming-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Metadata")).unwrap();
         std::fs::write(dir.join("origin.txt"), origin).unwrap();
@@ -431,7 +432,10 @@ mod tests {
         assert_eq!(next_stamp(s, s, 1), (format!("{s}-2"), 2));
         assert_eq!(next_stamp(s, s, 2), (format!("{s}-3"), 3));
         // 换一秒就重置，别一路加到 -99
-        assert_eq!(next_stamp("20261111-133823", s, 3), ("20261111-133823".to_string(), 1));
+        assert_eq!(
+            next_stamp("20261111-133823", s, 3),
+            ("20261111-133823".to_string(), 1)
+        );
     }
 
     #[test]
@@ -484,15 +488,13 @@ mod tests {
 
     #[test]
     fn origin_based_name_works_without_config() {
-        let dir = std::env::temp_dir().join(format!("starfish-naming-{}-nocfg", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("starfish-naming-{}-nocfg", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Metadata")).unwrap();
         std::fs::write(dir.join("origin.txt"), r"D:\导出\Pin (2).3mf").unwrap();
         let gcode = dir.join("Metadata").join(".1.1.gcode.pp");
-        assert_eq!(
-            origin_based_name(&gcode).as_deref(),
-            Some("Pin (2).gcode")
-        );
+        assert_eq!(origin_based_name(&gcode).as_deref(), Some("Pin (2).gcode"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -524,7 +526,10 @@ mod tests {
         let long = format!("{}.gcode", "A".repeat(80));
         let out = stamp(&long, "20261110-154030");
         assert!(out.len() <= NAME_MAX, "长度 {} 超过上限", out.len());
-        assert!(out.ends_with("_20261110-154030.gcode"), "时间戳或扩展名被砍了：{out}");
+        assert!(
+            out.ends_with("_20261110-154030.gcode"),
+            "时间戳或扩展名被砍了：{out}"
+        );
         assert!(!out.starts_with('_'));
     }
 

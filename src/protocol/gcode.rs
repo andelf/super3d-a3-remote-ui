@@ -2,6 +2,10 @@
 //!
 //! 只做轻量解析：行数、是否含挤出移动、X/Y 平面包围盒、估算时长（如含 F）。
 //! 不做完整 G-code 语义校验——那是打印机固件的事。
+//!
+//! **目前只有单测在用**：界面的「预览」还只显示缩略图（`protocol::header`），
+//! 还没做基于这份元数据的详情页。整模块先标 `allow(dead_code)`，接线时删掉即可。
+#![allow(dead_code)]
 
 #[derive(Debug, Clone, Default)]
 pub struct GcodeMeta {

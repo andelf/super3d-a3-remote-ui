@@ -162,7 +162,6 @@ fn fetch_file_list(
                         }
                     }
                     3 => {
-                        state = 3;
                         break;
                     }
                     _ => {}
@@ -185,7 +184,6 @@ fn fetch_file_list(
     }
     Vec::new()
 }
-
 
 // ───────────────────────────── 意图（Rust 侧动作） ─────────────────────────────
 
@@ -258,7 +256,9 @@ impl Intent {
                  操作前请先刷新文件列表确认。"
             ),
             Intent::Home => "回原点 Home\n三轴会依次回零，属于较长距离运动。".to_string(),
-            Intent::UploadPrint(p) => format!("上传并打印：{p}\n文件会先写入机内存储，然后立即开始打印。"),
+            Intent::UploadPrint(p) => {
+                format!("上传并打印：{p}\n文件会先写入机内存储，然后立即开始打印。")
+            }
             Intent::UploadOnly(p) => format!("上传：{p}"),
             Intent::Extrude(um) => format!(
                 "{} {:.1} mm\n需喷头已达工作温度，否则可能堵料。",
@@ -2238,7 +2238,9 @@ impl App {
         } else {
             "未连接设备".to_string()
         };
-        self.ui.label(cx, &[id!(host_label)]).set_text(cx, &host_line);
+        self.ui
+            .label(cx, &[id!(host_label)])
+            .set_text(cx, &host_line);
 
         // 顶栏状态灯：4 个胶囊切可见性，文案只写在当前那个上。
         let kind = self.state_kind();
@@ -2281,7 +2283,9 @@ impl App {
         } else {
             "—".to_string()
         };
-        self.ui.label(cx, &[id!(progress_label)]).set_text(cx, &ptext);
+        self.ui
+            .label(cx, &[id!(progress_label)])
+            .set_text(cx, &ptext);
 
         // 剩余时间（自己算的，所以带「约」）。文案没变就不碰 widget，省一次重排。
         let eta_text = self.eta_line().unwrap_or_default();
@@ -2293,14 +2297,12 @@ impl App {
         // 实时读数
         if self.connected {
             let st = &self.status;
-            self.ui.label(cx, &[id!(hotend_val)]).set_text(
-                cx,
-                &format!("{}℃ / {}℃", st.hotend_temp, st.hotend_target),
-            );
-            self.ui.label(cx, &[id!(bed_val)]).set_text(
-                cx,
-                &format!("{}℃ / {}℃", st.bed_temp, st.bed_target),
-            );
+            self.ui
+                .label(cx, &[id!(hotend_val)])
+                .set_text(cx, &format!("{}℃ / {}℃", st.hotend_temp, st.hotend_target));
+            self.ui
+                .label(cx, &[id!(bed_val)])
+                .set_text(cx, &format!("{}℃ / {}℃", st.bed_temp, st.bed_target));
             self.ui.label(cx, &[id!(pos_val)]).set_text(
                 cx,
                 &format!(
@@ -2379,9 +2381,7 @@ impl App {
                 } else {
                     elide_name(raw, 20)
                 };
-                self.ui
-                    .label(cx, &[file_name_id(i)])
-                    .set_text(cx, &marked);
+                self.ui.label(cx, &[file_name_id(i)]).set_text(cx, &marked);
             }
         }
         self.ui
@@ -2440,9 +2440,7 @@ impl App {
         if self.confirm_enabled && intent.is_dangerous() {
             let desc = intent.describe();
             self.pending = Some(intent);
-            self.ui
-                .label(cx, &[id!(confirm_text)])
-                .set_text(cx, &desc);
+            self.ui.label(cx, &[id!(confirm_text)]).set_text(cx, &desc);
             self.ui.modal(cx, &[id!(confirm_modal)]).open(cx);
         } else {
             self.execute(cx, intent);
@@ -2503,7 +2501,11 @@ impl App {
                 let an = ["X", "Y", "Z"].get(axis as usize).copied().unwrap_or("?");
                 self.set_message(
                     cx,
-                    &format!("{an} {} {} mm", if dir > 0 { "+" } else { "-" }, fmt_step(STEPS[self.step_idx])),
+                    &format!(
+                        "{an} {} {} mm",
+                        if dir > 0 { "+" } else { "-" },
+                        fmt_step(STEPS[self.step_idx])
+                    ),
                 );
             }
             Intent::Extrude(um) => {
@@ -2587,16 +2589,13 @@ impl App {
             .label(cx, &[id!(preview_title)])
             .set_text(cx, "已上传，是否开始打印？");
         // 文件名单独一行（长名字不会把元信息挤掉），下面才是切片参数。
-        self.ui
-            .label(cx, &[id!(preview_name)])
-            .set_text(cx, name);
+        self.ui.label(cx, &[id!(preview_name)]).set_text(cx, name);
         self.ui
             .label(cx, &[id!(preview_info)])
             .set_text(cx, &summary);
-        self.ui.label(cx, &[id!(preview_note)]).set_text(
-            cx,
-            &format!("机内 · {lines:.1} 万行 · 缩略图 {thumb_desc}"),
-        );
+        self.ui
+            .label(cx, &[id!(preview_note)])
+            .set_text(cx, &format!("机内 · {lines:.1} 万行 · 缩略图 {thumb_desc}"));
         self.ui
             .button(cx, &[id!(preview_print)])
             .set_text(cx, "开始打印");
@@ -3047,9 +3046,7 @@ impl App {
         let pct = job.sent * 100 / job.total.max(1);
         let pct = if job.sent >= job.total { 100 } else { pct };
         // 百分比没变也别把「速度/剩余时间」冻住：300ms 补刷一次明细。
-        if pct == job.last_pct
-            && job.painted_at.elapsed() < std::time::Duration::from_millis(300)
-        {
+        if pct == job.last_pct && job.painted_at.elapsed() < std::time::Duration::from_millis(300) {
             return;
         }
         job.last_pct = pct;
@@ -3078,7 +3075,9 @@ impl App {
             String::new()
         };
 
-        self.ui.label(cx, &[id!(up_pct)]).set_text(cx, &format!("{pct}%"));
+        self.ui
+            .label(cx, &[id!(up_pct)])
+            .set_text(cx, &format!("{pct}%"));
         self.ui.label(cx, &[id!(up_detail)]).set_text(
             cx,
             &if job.phase == UploadPhase::Begin {
@@ -3115,7 +3114,14 @@ impl App {
 
         if let Err(e) = c.upload_complete() {
             self.ui.modal(cx, &[id!(upload_modal)]).close(cx);
-            self.abort_upload(cx, &c, &job.name, job.sent, job.total, &format!("收尾失败：{e}"));
+            self.abort_upload(
+                cx,
+                &c,
+                &job.name,
+                job.sent,
+                job.total,
+                &format!("收尾失败：{e}"),
+            );
             return;
         }
         // 官方 App 不等 9/3 的 ACK，但等它有两个好处：确认设备真的把缓冲区刷完，
@@ -3236,7 +3242,11 @@ impl App {
         // 删错文件不可恢复，宁可留半截文件让用户在界面上自己处理。
         let closed = c.is_closed();
         let head = if closed {
-            format!("{name} 上传失败：设备断开（已传 {} / {}）", kb(sent), kb(total))
+            format!(
+                "{name} 上传失败：设备断开（已传 {} / {}）",
+                kb(sent),
+                kb(total)
+            )
         } else {
             format!("{name} 上传失败（已传 {} / {}）", kb(sent), kb(total))
         };
@@ -3272,9 +3282,7 @@ impl App {
                 // ⚠️ 默认停用：10/4 的 payload 布局来自参考实现的推测，
                 // 实测发几次之后机内 6 个文件掉了 4 个（名字对不上的也掉）。
                 // 删错文件不可恢复，必须显式开门。
-                if !self.cli.delete.is_empty()
-                    && std::env::var_os("SF_ALLOW_DELETE").is_some()
-                {
+                if !self.cli.delete.is_empty() && std::env::var_os("SF_ALLOW_DELETE").is_some() {
                     let mut st = None;
                     let _ = fetch_file_list(&c, &mut st, false);
                     for name in self.cli.delete.clone() {
@@ -4007,11 +4015,7 @@ impl MatchEvent for App {
         }
 
         // ── 预览弹窗 / 上传完成后的「是否开始打印」 ──
-        if self
-            .ui
-            .button(cx, &[id!(preview_print)])
-            .clicked(actions)
-        {
+        if self.ui.button(cx, &[id!(preview_print)]).clicked(actions) {
             self.ui.modal(cx, &[id!(preview_modal)]).close(cx);
             let mode = self.preview_mode;
             self.preview_mode = PreviewMode::UploadAndPrint;
@@ -4022,11 +4026,7 @@ impl MatchEvent for App {
                 }
             }
         }
-        if self
-            .ui
-            .button(cx, &[id!(preview_cancel)])
-            .clicked(actions)
-        {
+        if self.ui.button(cx, &[id!(preview_cancel)]).clicked(actions) {
             self.ui.modal(cx, &[id!(preview_modal)]).close(cx);
             let was_ask = self.preview_mode == PreviewMode::StartOnly;
             self.preview_mode = PreviewMode::UploadAndPrint;
@@ -4127,9 +4127,7 @@ impl App {
         } else {
             "确认后会写入机内存储并立即开始打印。".to_string()
         };
-        self.ui
-            .label(cx, &[id!(preview_note)])
-            .set_text(cx, &note);
+        self.ui.label(cx, &[id!(preview_note)]).set_text(cx, &note);
         self.ui
             .button(cx, &[id!(preview_print)])
             .set_text(cx, "上传并开始打印");
@@ -4178,7 +4176,8 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("starfish-discover".into())
             .spawn(move || {
-                let r = crate::protocol::connection::discover(std::time::Duration::from_millis(1200));
+                let r =
+                    crate::protocol::connection::discover(std::time::Duration::from_millis(1200));
                 let _ = tx.send(r);
             });
         if spawned.is_err() {
@@ -4327,7 +4326,10 @@ mod tests {
         for raw in ["Clip S1_PETG_43m31s.gcode", "切片 1_PETG_6m4s.gcode"] {
             let (name, _) = sanitize_name(raw);
             let stamped = crate::naming::stamp(&name, "20261111-133822");
-            assert!(stamped.ends_with("_20261111-133822.gcode"), "{raw} → {stamped}");
+            assert!(
+                stamped.ends_with("_20261111-133822.gcode"),
+                "{raw} → {stamped}"
+            );
             assert!(stamped.len() <= 64, "{raw} → {stamped}");
             assert!(!stamped.starts_with('.'), "{raw} → {stamped}");
             assert!(stamped.is_ascii(), "{raw} → {stamped}");

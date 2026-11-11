@@ -46,6 +46,10 @@ pub fn payload_sum(payload: &[u8]) -> u16 {
 }
 
 /// 校验一帧的校验字节是否正确。
+///
+/// 生产路径（`Connection`）走 `wait_ack` 的「cmd/sub 匹配」，不做逐帧校验；
+/// 这个函数是抓包验证与本地假打印机单测的对照实现，故只在 `cfg(test)` 下被调用。
+#[allow(dead_code)]
 pub fn verify(frame: &[u8]) -> bool {
     if frame.len() < HEADER_LEN {
         return false;
@@ -68,10 +72,15 @@ pub fn verify(frame: &[u8]) -> bool {
 }
 
 /// 流式帧解析器：可增量喂入字节，吐出 payload。
+///
+/// 生产路径不逐帧切包（`Connection` 的读线程按长度读完整帧再投递），
+/// 这份增量实现用来在单测里模拟「半个帧到达」的边界，故标注为测试专用。
+#[allow(dead_code)]
 pub struct FrameParser {
     buf: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl FrameParser {
     pub fn new() -> Self {
         FrameParser { buf: Vec::new() }
@@ -101,8 +110,8 @@ impl FrameParser {
         let mut i = 0;
         while i + HEADER_LEN <= buf.len() {
             if buf[i] == SOF0 && buf[i + 1] == SOF1 && buf[i + 2] == HEADER_FLAG {
-                let len = u32::from_le_bytes([buf[i + 3], buf[i + 4], buf[i + 5], buf[i + 6]])
-                    as usize;
+                let len =
+                    u32::from_le_bytes([buf[i + 3], buf[i + 4], buf[i + 5], buf[i + 6]]) as usize;
                 let end = i + HEADER_LEN + len;
                 if end > buf.len() {
                     // 帧未完整到达
@@ -225,7 +234,12 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        for pl in [vec![], vec![8, 0, 0, 12], vec![12, 3, 0, 12], (0u8..=255).collect::<Vec<_>>()] {
+        for pl in [
+            vec![],
+            vec![8, 0, 0, 12],
+            vec![12, 3, 0, 12],
+            (0u8..=255).collect::<Vec<_>>(),
+        ] {
             let f = build(&pl);
             assert!(verify(&f), "verify failed for {:?}", pl);
             assert_eq!(f.len(), HEADER_LEN + pl.len());
