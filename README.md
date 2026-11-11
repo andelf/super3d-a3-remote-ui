@@ -79,6 +79,33 @@ OrcaSlicer 的后处理脚本是**同步**调的：脚本不退出，切片器�
 
 不做 `AttachThreadInput` 或常驻 `topmost`：那会永久改变 z 序、干扰别人的输入焦点。
 
+### 连接不阻塞界面，连不上时文件不丢
+
+三处网络 IO 曾经都在 UI 线程里同步跑：
+
+| 调用 | 最坏耗时 |
+|---|---|
+| `TcpStream::connect` 到不可达 IP | 20 秒以上（内核 SYN 重试） |
+| 初次拉机内文件列表（分页 + 心跳） | ≈ 4.7 秒 |
+| UDP 扫描 | 1.2 秒 |
+
+设备关机、或 `--host` 写错时，窗口连重绘都排不上，看起来就是「应用卡死」。
+现在这三者都在后台线程：连接层改用 `connect_timeout`（3 秒硬上限），
+`connect + 初次文件列表` 整体在 `starfish-connect` 线程完成，扫描在
+`starfish-discover` 线程完成；主线程只在定时器里 `try_recv` 收结果，
+一次阻塞 IO 都不做。状态栏会写明「后台进行，界面可继续操作」。
+
+命令行交接遇到「设备还没连上」时也**不再把文件丢掉**：
+
+- 请求留在 `remote_queue`，交接副本保留在 `%TEMP%\starfish-handoff\`；
+- 每 5 秒后台重试一次连接（命令行 `--host` 点名的优先，否则第一台已知设备），
+  状态栏显示重试次数和保留的文件数；
+- 连接一成功，下一个 12ms tick 自动取队列上传，传完照常弹「是否开始打印」，
+  不需要用户再点任何按钮。
+
+手动点「重新扫描」只更新设备列表，不会顺手连上去；只有启动那次扫描会自动连第一台。
+用户主动点「断开」会暂停自动重连（文件仍保留），直到下一次新导出或手动连接为止。
+
 ## 上传名从哪来（`src/naming.rs`）
 
 Orca 调后处理脚本时，传的是它**内部的临时文件**，不是你要导出的那个：
@@ -195,7 +222,7 @@ starfish-control.exe --dump-env
 ## 构建与测试状态
 
 - `cargo build --release` / `cargo test --release` 在本机（MSVC + VS Build Tools）通过，
-  62 个单测通过、1 个 `ignored`（`header::real_gcode` 需要 `SF_GCODE` 指向真实切片文件）。
+  63 个单测通过、1 个 `ignored`（`header::real_gcode` 需要 `SF_GCODE` 指向真实切片文件）。
 - `makepad-widgets` 走 git `dev` 分支，`Cargo.lock` 已锁定 commit。
 - 剩余编译警告都是 dead_code（协议层预留字段）与 `protocol/mod.rs` 的冗余 re-export。
 
@@ -252,12 +279,12 @@ starfish-control/
     log.rs             # 落盘运行日志 / 后处理进程环境变量快照（含单测）
     fonts.rs           # 把内嵌字体填进脚本资源表（换机器不变方块）
     eta.rs             # 剩余时间（有切片器总时长就用它，没有才退到实测斜率）
-    app.rs             # App / MatchEvent / AppMain / Splash UI
+    app.rs             # App / MatchEvent / AppMain / Splash UI（连接后台化 + 待传队列）
     protocol/
       mod.rs
       frame.rs         # 帧编解码（已用抓包验证，含单测）
       status.rs        # 39 字节状态解析（含单测）
-      connection.rs    # UDP 发现 + TCP 后台线程 + 通道桥 + 全部命令构造
+      connection.rs    # UDP 发现 + TCP 后台线程 + 通道桥 + 命令构造（connect_timeout 3s 上限）
       header.rs        # G-code 头部重写（缩略图/时长/键值归一化，含单测）
       gcode.rs         # G-code 解析（预览用，含单测）
       sacp.rs          # SACP 占位（本设备不使用）

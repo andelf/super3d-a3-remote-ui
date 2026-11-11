@@ -42,6 +42,39 @@ const STEPS: [f64; 3] = [0.1, 1.0, 10.0];
 /// 上传文件选择框的 id：用它把回包和别的对话框区分开。
 const PICK_GCODE: LiveId = live_id!(pick_gcode);
 
+/// 有交接文件在等、但设备没连上时，隔多久重试一次连接。
+///
+/// 设备可能还没开机。低频重试是为了「开机后自动接着传」，不是为了刷屏——
+/// 每次连接都在后台线程跑，主线程一次都不阻塞。
+const CONNECT_RETRY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 后台连接线程送回主线程的结果。
+///
+/// `Connection` / `DeviceStatus` 都是纯数据 + channel，可以跨线程搬。
+/// 初次文件列表也在这里一起拉完：它最长要等约 4.7 秒（分页 + 心跳），
+/// 留在主线程做的话「刚连上」那一下照样会卡住窗口。
+struct ConnectOutcome {
+    ip: String,
+    serial: String,
+    /// Ok = (连接, 机内文件名, 握手时顺手读到的状态)
+    result: std::io::Result<(Connection, Vec<String>, Option<DeviceStatus>)>,
+}
+
+/// 队列里有文件在等、设备没连上时，该拿哪台设备去重试。
+///
+/// 命令行点名的优先，其次第一台已知设备；一台都没有就返回 `None`（调用方去扫描）。
+/// 抽成纯函数是因为 App 是 Makepad 的 Live 结构，单测里造不出实例。
+fn pending_connect_target(queue: &[ipc::Request], devices: &[Device]) -> Option<String> {
+    // 没有待传文件就没什么好等的，别凭空发起一次连接占设备会话。
+    if queue.is_empty() {
+        return None;
+    }
+    queue
+        .iter()
+        .find_map(|r| r.host.clone().filter(|h| !h.is_empty()))
+        .or_else(|| devices.first().map(|d| d.ip.clone()))
+}
+
 /// 上传吞吐的实测值（官方 App 抓包 + 本程序实测都在 0.7–0.8 MB/s）。
 ///
 /// 曾经的「3 MB 上限」是假象：真正的限制是设备 **4 秒会话看门狗**（见
@@ -1644,6 +1677,25 @@ pub struct App {
     last_stamp: String,
     #[rust]
     stamp_seq: u32,
+    /// 后台连接线程的收件箱。`Some` = 连接进行中，此时不消费交接队列、不重复发起。
+    #[rust]
+    connect_rx: Option<std::sync::mpsc::Receiver<ConnectOutcome>>,
+    /// 后台 UDP 扫描的收件箱。
+    #[rust]
+    discover_rx: Option<std::sync::mpsc::Receiver<std::io::Result<Vec<Device>>>>,
+    /// 启动后的第一次扫描结束时自动连第一台设备（手动点「重新扫描」不会）。
+    #[rust]
+    auto_connect_after_discover: bool,
+    /// 上一次自动重试连接的时间。
+    #[rust]
+    last_connect_try: Option<std::time::Instant>,
+    /// 连续重试次数，写进状态栏让用户知道界面没死。
+    #[rust]
+    connect_attempts: u32,
+    /// 用户主动点了「断开」：暂停自动重连，直到下一次新交接到达。
+    /// 否则刚断开 5 秒又被连回去，等于没尊重用户的操作。
+    #[rust]
+    auto_retry_paused: bool,
 }
 
 /// 上传成功之后做什么。
@@ -1836,45 +1888,151 @@ impl App {
                 return;
             }
         };
-        // 重连前清掉旧连接，避免状态串台。
-        if self.conn.is_some() {
-            if let Some(c) = &self.conn {
-                let _ = c.disconnect();
-            }
-            self.conn = None;
-            self.connected = false;
-        }
+        // 重连前清掉旧连接，避免状态串台（清场在 connect_host 里统一做）。
         self.connect_host(cx, &dev.ip, &dev.serial);
     }
 
+    /// 发起一次连接，**立刻返回**。
+    ///
+    /// 以前 `Connection::connect` 直接在这里跑：目标不可达时内核的 SYN 重试能挂
+    /// 20 多秒，窗口完全不重绘，看起来就是「应用卡死」。现在 TCP 握手、读写线程
+    /// 搭建、以及初次拉文件列表（分页最长约 4.7 秒）全部在后台线程完成，
+    /// 主线程只在 `poll_connect` 里 `try_recv` 收结果，一次阻塞 IO 都不做。
     fn connect_host(&mut self, cx: &mut Cx, ip: &str, serial: &str) {
-        match Connection::connect(ip, 7777) {
-            Ok(conn) => {
-                self.host = ip.to_string();
-                self.serial = serial.to_string();
+        if self.connect_rx.is_some() {
+            self.set_message(cx, "已有一次连接正在进行，请稍候");
+            return;
+        }
+        // 清掉旧连接：切到另一台设备时也走这里，避免旧会话的读数串过来。
+        if let Some(c) = &self.conn {
+            let _ = c.disconnect();
+        }
+        self.conn = None;
+        self.connected = false;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ip2 = ip.to_string();
+        let serial2 = serial.to_string();
+        let dump = std::env::var_os("SF_DUMP_LIST").is_some();
+        let spawned = std::thread::Builder::new()
+            .name("starfish-connect".into())
+            .spawn(move || {
+                let result = Connection::connect_timeout(
+                    &ip2,
+                    7777,
+                    crate::protocol::connection::CONNECT_TIMEOUT,
+                )
+                .map(|conn| {
+                    let mut st = None;
+                    let names = fetch_file_list(&conn, &mut st, dump);
+                    (conn, names, st)
+                });
+                let _ = tx.send(ConnectOutcome {
+                    ip: ip2,
+                    serial: serial2,
+                    result,
+                });
+            });
+        if spawned.is_err() {
+            self.set_message(cx, "无法启动连接线程，请重试");
+            self.sync(cx);
+            return;
+        }
+        self.connect_rx = Some(rx);
+
+        let retry = if self.connect_attempts > 0 {
+            format!("（第 {} 次重试）", self.connect_attempts)
+        } else {
+            String::new()
+        };
+        let pending = if self.remote_queue.is_empty() {
+            String::new()
+        } else {
+            format!("；{} 个待上传文件已保留", self.remote_queue.len())
+        };
+        self.set_message(
+            cx,
+            &format!("正在连接 {ip}{retry}…（后台进行，界面可继续操作）{pending}"),
+        );
+        self.sync(cx);
+    }
+
+    /// 收后台连接的结果。成功装上连接；失败只改状态栏，绝不在 UI 线程重试。
+    fn poll_connect(&mut self, cx: &mut Cx) {
+        let res = match self.connect_rx.as_ref() {
+            Some(rx) => rx.try_recv(),
+            None => return,
+        };
+        let outcome = match res {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.connect_rx = None;
+                self.set_message(cx, "连接线程意外退出，请重试连接");
+                self.sync(cx);
+                return;
+            }
+        };
+        self.connect_rx = None;
+
+        match outcome.result {
+            Ok((conn, names, st)) => {
+                self.host = outcome.ip.clone();
+                self.serial = outcome.serial.clone();
                 self.connected = true;
                 self.conn = Some(std::sync::Arc::new(conn));
                 self.files.clear();
+                for n in names {
+                    if !self.files.contains(&n) {
+                        self.files.push(n);
+                    }
+                }
+                if let Some(st) = st {
+                    self.note_status(&st);
+                    self.status = st;
+                }
                 // 记住这台设备：UDP 发现偶尔不响应，下次启动仍能一键连接。
-                self.remember_device(ip, serial);
-                // 让设备卡里出现这一行（--host 直连时本来不在扫描结果里）。
-                if !self.devices.iter().any(|d| d.ip == ip) {
+                self.remember_device(&outcome.ip, &outcome.serial);
+                if !self.devices.iter().any(|d| d.ip == outcome.ip) {
                     self.devices.insert(
                         0,
                         Device {
-                            ip: ip.to_string(),
-                            serial: serial.to_string(),
+                            ip: outcome.ip.clone(),
+                            serial: outcome.serial.clone(),
                         },
                     );
                 }
-                self.set_message(cx, &format!("已连接 {ip}，正在读取状态…"));
-                self.refresh_files(cx);
+                self.connect_attempts = 0;
+                self.last_connect_try = None;
+                let resume = if self.remote_queue.is_empty() {
+                    String::new()
+                } else {
+                    format!("，继续上传 {} 个待处理文件", self.remote_queue.len())
+                };
+                self.set_message(
+                    cx,
+                    &format!(
+                        "已连接 {}（{} 个机内文件）{resume}",
+                        outcome.ip,
+                        self.files.len()
+                    ),
+                );
+                // 不用在这里手动触发上传：下一个 12ms tick 的 drain_remote
+                // 看到 connected=true 就会自动取队列里的请求。
                 self.sync(cx);
             }
             Err(e) => {
                 self.connected = false;
                 self.conn = None;
-                self.set_message(cx, &format!("连接 {ip} 失败：{e}"));
+                let pending = if self.remote_queue.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "；{} 个待上传文件已保留，设备上线后自动继续",
+                        self.remote_queue.len()
+                    )
+                };
+                self.set_message(cx, &format!("连接 {} 失败：{e}{pending}", outcome.ip));
                 self.sync(cx);
             }
         }
@@ -2380,7 +2538,8 @@ impl App {
                 self.eta.clear_total();
                 self.eta_owned = false;
                 self.prev_ps = None;
-                self.set_message(cx, "已断开连接");
+                self.auto_retry_paused = true;
+                self.set_message(cx, "已断开连接（待上传文件保留，新导出或手动连接后继续）");
                 self.sync(cx);
             }
         }
@@ -3215,19 +3374,65 @@ impl App {
             self.remote_queue.push(req);
         }
         if self.remote_queue.len() > before {
+            // 新的导出 = 用户又想传文件了，解除手动断开后的重连暂停。
+            self.auto_retry_paused = false;
             self.raise_for_handoff();
         }
         if self.upload_job.is_some() {
             return;
         }
-        // 兜底清扫：上一次交接如果卡在确认弹窗被取消、或者连接失败，副本会留在
-        // %TEMP% 里。这里每次空闲 tick 清一遍，最多只残留一个目录。
-        if self.remote_queue.is_empty() {
-            self.cleanup_staged();
+        // 连接进行中：队列和副本都原样留着。连接结果由 poll_connect 收，
+        // 成功后的下一个 tick 会自动走到下面的「已连接」分支把文件传出去。
+        if self.connect_rx.is_some() {
+            return;
+        }
+        if !self.connected {
+            if self.remote_queue.is_empty() {
+                // 空闲兜底清扫：确认弹窗被取消之类的残留副本。
+                self.cleanup_staged();
+            } else {
+                // 设备没连上：文件留在队列里，低频后台重连，绝不丢。
+                self.ensure_connect_for_pending(cx);
+            }
+            return;
         }
         if !self.remote_queue.is_empty() {
             let req = self.remote_queue.remove(0);
             self.run_remote(cx, req);
+        } else {
+            self.cleanup_staged();
+        }
+    }
+
+    /// 有文件在等、但设备没连上：挑一台目标设备，低频异步重试。
+    ///
+    /// 常见场景是「先在切片器里导出，过一会儿才给打印机通电」。所以这里不报错、
+    /// 不丢文件、不刷屏，每 5 秒后台试一次；连上后 `poll_connect` 把 connected
+    /// 置回 true，下一个 12ms tick 就自动接着上传。
+    fn ensure_connect_for_pending(&mut self, cx: &mut Cx) {
+        if self.connect_rx.is_some() || self.remote_queue.is_empty() || self.auto_retry_paused {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if let Some(t) = self.last_connect_try {
+            if now.duration_since(t) < CONNECT_RETRY_EVERY {
+                return;
+            }
+        }
+        // 命令行点名的设备优先；否则第一台已知设备；一台都没有就后台扫一次。
+        let target = pending_connect_target(&self.remote_queue, &self.devices);
+        self.last_connect_try = Some(now);
+        match target {
+            Some(ip) => {
+                self.connect_attempts += 1;
+                self.connect_host(cx, &ip, "");
+            }
+            None => {
+                if self.discover_rx.is_none() {
+                    self.start_discover(cx, false);
+                }
+                self.set_message(cx, "等待设备连接：正在扫描局域网… 待上传文件已保留");
+            }
         }
     }
 
@@ -3252,7 +3457,10 @@ impl App {
         crate::raise::attention();
     }
 
-    /// 执行一条来自命令行的请求：连设备 → 上传（必要时直接开打）。
+    /// 执行一条来自命令行的请求：上传（必要时传完直接开打）。
+    ///
+    /// 调用前提：`drain_remote` 已确认设备连上、且没有上传在跑。连接本身是异步的，
+    /// 没连上时请求根本不会被取出来，所以这里不再处理「连接失败」。
     ///
     /// 后处理**不在这里做**：命令行进程已经改好了（`--rewrite` 的话连文件都写回了）。
     /// 这里再 `prepare_upload` 一次只是为了拿到字节和元信息，`convert` 是幂等的，
@@ -3273,33 +3481,15 @@ impl App {
             .unwrap_or("upload.gcode")
             .to_string();
 
-        // 目标设备：命令行点名了就连它，否则已连着的优先，再否则第一台已知设备。
-        match &req.host {
-            Some(host) if !self.connected || self.host != *host => {
-                let host = host.clone();
-                self.connect_host(cx, &host, "");
-            }
-            None if !self.connected => {
-                if let Some(d) = self.devices.first().cloned() {
-                    self.connect_host(cx, &d.ip, &d.serial);
-                } else {
-                    self.discover(cx);
-                    if let Some(d) = self.devices.first().cloned() {
-                        self.connect_host(cx, &d.ip, &d.serial);
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        if !self.connected {
-            self.set_message(
-                cx,
-                &format!("命令行交来 {name}，但没有连上设备：连上后在文件列表里手动上传"),
-            );
-            // 这次交接落空了，副本留着也没人用（原文件还在用户那儿）。
-            self.cleanup_staged();
-            self.sync(cx);
+        // 命令行点名了另一台设备：把请求放回队列，异步切过去，连上后会自动
+        // 再取一次。这里**不删副本、不判失败**——设备没连上不等于交接失败。
+        let switch_to = req
+            .host
+            .clone()
+            .filter(|h| !h.is_empty() && h.as_str() != self.host.as_str());
+        if let Some(host) = switch_to {
+            self.remote_queue.insert(0, req);
+            self.connect_host(cx, &host, "");
             return;
         }
 
@@ -3560,13 +3750,9 @@ impl MatchEvent for App {
         if let Some(host) = self.cli.host.clone() {
             self.connect_host(cx, &host, "");
         } else {
-            self.discover(cx);
-            // 自动连接第一台：命令行带来文件时不用用户再点一次。
-            if self.conn.is_none() {
-                if let Some(d) = self.devices.first().cloned() {
-                    self.connect_host(cx, &d.ip, &d.serial);
-                }
-            }
+            // 后台扫描，结果回来后再连第一台（见 `poll_discover`）。
+            // 启动阶段不做任何同步网络 IO，窗口从第一帧起就能响应。
+            self.start_discover(cx, true);
         }
         self.sync(cx);
 
@@ -3576,6 +3762,11 @@ impl MatchEvent for App {
     }
 
     fn handle_timer(&mut self, cx: &mut Cx, event: &TimerEvent) {
+        // 后台连接 / 扫描的结果：两个 timer 都会经过这里，每次都收一次。
+        // 主线程只做 try_recv，绝不等网络。
+        self.poll_connect(cx);
+        self.poll_discover(cx);
+
         // 上传中的快节奏 tick：非阻塞推进一片就返回，界面才画得出进度。
         if self.upload_timer.is_timer(event).is_some() {
             // 命令行交来的任务：用 12ms 的快 tick 收，Orca 的后处理进程
@@ -3968,14 +4159,57 @@ impl App {
         }
     }
 
-    /// UDP 发现设备并刷新设备行池。
+    /// 「重新扫描」按钮：只扫，不自动连接。
+    fn discover(&mut self, cx: &mut Cx) {
+        self.start_discover(cx, false);
+    }
+
+    /// UDP 发现设备并刷新设备行池，**后台执行**。
+    ///
+    /// 同步版本会让主线程整整 1.2 秒不重绘；设备没开机时我们还会周期性重扫，
+    /// 那样界面就会一顿一顿的。结果在 `poll_discover` 里收。
     ///
     /// **不清空**已有列表：UDP 发现常被占用/静默，清空会让用户刚看到的设备消失。
-    /// 新发现的设备合并进来，已知设备（上次连接记录）也保留。
-    fn discover(&mut self, cx: &mut Cx) {
+    fn start_discover(&mut self, cx: &mut Cx, auto_connect: bool) {
+        if self.discover_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("starfish-discover".into())
+            .spawn(move || {
+                let r = crate::protocol::connection::discover(std::time::Duration::from_millis(1200));
+                let _ = tx.send(r);
+            });
+        if spawned.is_err() {
+            self.set_message(cx, "无法启动扫描线程");
+            return;
+        }
+        self.discover_rx = Some(rx);
+        if auto_connect {
+            self.auto_connect_after_discover = true;
+        }
         self.set_message(cx, "正在扫描局域网…");
         self.sync(cx);
-        match crate::protocol::connection::discover(std::time::Duration::from_millis(1200)) {
+    }
+
+    fn poll_discover(&mut self, cx: &mut Cx) {
+        let res = match self.discover_rx.as_ref() {
+            Some(rx) => rx.try_recv(),
+            None => return,
+        };
+        let outcome = match res {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.discover_rx = None;
+                return;
+            }
+        };
+        self.discover_rx = None;
+        let auto_connect = std::mem::take(&mut self.auto_connect_after_discover);
+
+        match outcome {
             Ok(devs) => {
                 let found = devs.len();
                 for d in devs {
@@ -3998,10 +4232,15 @@ impl App {
                         "未发现设备：确认打印机在线；也可用 --host 指定 IP 启动".to_string()
                     },
                 );
-                self.sync(cx);
             }
-            Err(e) => {
-                self.set_message(cx, &format!("扫描失败：{e}"));
+            Err(e) => self.set_message(cx, &format!("扫描失败：{e}")),
+        }
+        self.sync(cx);
+
+        // 只有启动时的那一次扫描会顺手连第一台；手动点「重新扫描」不会。
+        if auto_connect && !self.connected && self.connect_rx.is_none() {
+            if let Some(d) = self.devices.first().cloned() {
+                self.connect_host(cx, &d.ip, &d.serial);
             }
         }
     }
@@ -4022,6 +4261,36 @@ impl AppMain for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_target_prefers_the_host_named_by_the_request() {
+        let req = |host: Option<&str>| ipc::Request {
+            host: host.map(str::to_string),
+            ..Default::default()
+        };
+        let devs = vec![Device {
+            ip: "192.168.1.9".into(),
+            serial: "S1".into(),
+        }];
+        // 点名的设备优先，哪怕队列里第一个请求没点名
+        assert_eq!(
+            pending_connect_target(&[req(None), req(Some("127.0.0.1"))], &devs),
+            Some("127.0.0.1".into())
+        );
+        // 没人点名 → 第一台已知设备
+        assert_eq!(
+            pending_connect_target(&[req(None)], &devs),
+            Some("192.168.1.9".into())
+        );
+        // 空字符串不算点名
+        assert_eq!(
+            pending_connect_target(&[req(Some(""))], &devs),
+            Some("192.168.1.9".into())
+        );
+        // 队列空 / 没有已知设备 → 让调用方去扫描
+        assert_eq!(pending_connect_target(&[], &devs), None);
+        assert_eq!(pending_connect_target(&[req(None)], &[]), None);
+    }
 
     #[test]
     fn device_names_never_start_with_a_dot() {

@@ -82,9 +82,37 @@ pub struct Connection {
     status_slot: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
+/// TCP 握手的默认超时。
+///
+/// 裸 `TcpStream::connect` 对不可达地址会走系统的 SYN 重试，Windows 上能挂 20 秒以上。
+/// 以前这个调用直接发生在 UI 线程里，界面就是这么「卡死」的。现在连接整体搬到了
+/// 后台线程（`app::connect_host`），这里再给一个硬上限，保证那个线程也一定会回来。
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
 impl Connection {
     pub fn connect(host: &str, port: u16) -> io::Result<Connection> {
-        let stream = TcpStream::connect((host, port))?;
+        Self::connect_timeout(host, port, CONNECT_TIMEOUT)
+    }
+
+    /// 带超时的连接。地址先解析成 `SocketAddr` 再用 `connect_timeout`，
+    /// 这样连不上时不会把调用线程拖进内核的 SYN 重试。
+    pub fn connect_timeout(host: &str, port: u16, timeout: Duration) -> io::Result<Connection> {
+        use std::net::ToSocketAddrs;
+        let addr = (host, port)
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("无法解析地址 {host}:{port}"),
+                )
+            })?;
+        let stream = TcpStream::connect_timeout(&addr, timeout)?;
+        Self::from_stream(stream)
+    }
+
+    /// 把一条已经连上的 TCP 流包装成「后台读/写线程 + 通道桥」。
+    fn from_stream(stream: TcpStream) -> io::Result<Connection> {
         let read_stream = stream.try_clone()?;
         let write_stream = stream;
 
