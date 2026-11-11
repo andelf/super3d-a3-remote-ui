@@ -2,6 +2,12 @@
 name = "starfish-control"
 version = "0.1.0"
 edition = "2021"
+description = "Super3D A3 打印机的远程打印控制工具（Makepad GUI + OrcaSlicer 后处理）"
+license = "MIT"
+repository = "https://github.com/andelf/super3d-a3-remote-ui"
+readme = "README.md"
+# 可执行文件名保持 starfish-control：OrcaSlicer 的后处理脚本路径写死在切片器配置里，
+# 改名会让用户已经配好的导出流程失效。仓库名（super3d-a3-remote-ui）只用于分发。
 
 # Makepad 2.0 桌面应用。
 # 依赖走 git dev 分支（依据 makepad-skills：makepad-widgets 用 git dev 分支，非 crates.io stable）。

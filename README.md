@@ -4,314 +4,95 @@
 开始/暂停/停止打印、查看温度与进度，并可挂到 **OrcaSlicer 的后处理**上——
 切片导出结束后自动把文件送进界面，问一句「要不要现在打」。
 
-技术栈是 **Rust + Makepad 2.0**（原生 GUI，单个 exe，字体已内嵌）；
-通信走设备的 **starfish-net** 协议（UDP 11221 发现 + TCP 7777 控制，
-目标机型为 Super3D A3 / 星鱼 A 系列，Snapmaker Luban 定制固件）。
-协议层不依赖 GUI，同一份代码被图形界面和命令行共用。
+技术栈：Rust + Makepad 2.0（原生 GUI，单文件 exe，字体已内嵌）。
+通信走设备的 starfish-net 协议（UDP 11221 发现 + TCP 7777 控制），
+目标机型 Super3D A3 / 星鱼 A 系列（Snapmaker Luban 定制固件）。
 
-设计依据：`github.com/Zhanghandong/makepad-skills`（Makepad 2.0 技能集）。
-协议依据：抓包逐字节验证，报文布局写在 `src/protocol/` 各模块的文档注释里。
-
-> **仓库名和可执行文件名不一样，这是故意的。**
-> 仓库叫 `super3d-a3-remote-ui`，编出来的程序仍是 `starfish-control.exe`：
-> 后处理脚本的路径是写死在 OrcaSlicer 配置里的，改名会让已经配好的导出流程失效。
+> **仓库名和可执行文件名不一样，这是故意的。** 仓库叫 `super3d-a3-remote-ui`，
+> 编出来的程序仍是 `starfish-control.exe`——后处理脚本路径是写死在 OrcaSlicer
+> 配置里的，改名会让已经配好的导出流程失效。
 
 ## 功能
 
-- 设备发现（UDP 广播）+ 设备列表页
-- 设备控制页：状态实时显示、文件列表（列出/删除）、上传 G-code、开始/暂停/恢复/停止打印
-- 打印剩余时间：协议不上报时间。文件是本软件上传的 → 用头部 `;TIME:` 总时长（切片器的真实值，准）；机内老文件拿不到头部 → 退回 `(时刻, 进度)` 最小二乘斜率外推，界面标「实测估算」（`src/eta.rs`）
-- 手动控制：回原点、单轴回零、风扇、温度、电机移动、关电机、挤出、回抽、急停
-- **命令行**：作为 OrcaSlicer 的后处理脚本被调用。命令行进程只做后处理，然后把
-  「传这个文件」交接给常驻的图形界面并**立刻退出**，切片器不会被拖住（见下节）；
-  也支持 `--list` / `--status` / `--delete` headless 运行
-- 协议层与 UI 解耦：同一份协议代码被 GUI 与 CLI 共用
+- 自动发现设备（UDP 广播），设备列表页切换
+- 状态实时显示：喷头/热床温度、进度、剩余时间、位置、风扇
+- 机内文件管理：列出、上传、删除、发起打印
+- 手动控制：回原点、风扇、温度、移动、挤出、急停
+- 剩余时间：本软件上传的文件用 G-code 头部总时长（切片器的真实值，准）；
+  机内老文件拿不到头部，退回按实测进度外推，界面标「实测估算」
+- 命令行：可当 OrcaSlicer 后处理脚本，也能 headless 跑
+  `--list` / `--status` / `--delete`
 
-## 构建（重要）
+## 构建
 
-本工程**不能**在未安装 C/C++ 链接器的机器上链接（Makepad 是原生 GUI）。
-需要以下之一：
+Makepad 是原生 GUI，链接需要 C/C++ 工具链，二选一：
 
-1. **Visual Studio Build Tools**（"使用 C++ 的桌面开发"工作负载）→ 提供 `cl.exe`/`link.exe`（MSVC）。
-2. 或 GNU 路线：`rustup target add x86_64-pc-windows-gnu` + 安装 MinGW-w64，再
-   `cargo build --target x86_64-pc-windows-gnu`。
-
-```bash
-# 在已装链接器的开发机：
-cargo build            # 调试
-cargo run              # GUI 模式，自动发现设备
-cargo run -- --host 192.168.0.227        # 直接连指定设备
-cargo run -- --list  --host 192.168.0.227  # 列出设备文件后退出
-cargo run -- --status --host 192.168.0.227 # 打印状态后退出
-cargo run -- print.gcode --host 192.168.0.227  # 后处理 → 交给界面上传 → 自己退出
-```
-
-## 命令行与图形界面怎么分工（重要）
-
-OrcaSlicer 的后处理脚本是**同步**调的：脚本不退出，切片器就一直等。所以带文件启动时
-**不能**在同一个进程里做上传——那要几秒到几十秒，切片器就卡成「无响应」。
-
-现在的分工：
-
-1. 命令行进程（`starfish-control.exe xxx.gcode`，也就是 Orca 调的那条）：
-   - 做 G-code 后处理（纯本地，几十毫秒），`--rewrite` 时写回并留 `.orca-original` 备份；
-   - 把结果**另存一份到自己的临时目录**（`%TEMP%\starfish-handoff\<pid>-<时间戳>\<真实导出名>`），
-     交给界面的是这个副本的路径，不是切片器给的路径。原因：切片器在脚本退出后会立刻
-     收尾（挪文件、重开写句柄、清临时目录），界面是异步接活的（冷启动还要 1–3 秒），
-     等它真去读原路径就会「读取文件失败」；
-   - 副本名不是切片器的临时名，而是**切片器在环境变量里给的真实导出名**（见下节）；
-   - 探测有没有图形界面在跑（`src/ipc.rs`，本地 127.0.0.1 服务）；
-     - 有 → 把「传这个文件」发过去；
-     - 没有 → 拉起一个界面（**stdio 全置 null**，否则管道不关，切片器照样等），
-       然后重试交接，最多等 15 秒；
-   - **立刻退出**（实测：界面已在跑 140ms，需要冷启动界面约 1 秒）。
-2. 图形界面进程：常驻，本地服务监听 51721（`STARFISH_CTL_PORT` 可改）。
-   收到请求后在自己的事件循环里上传，传完再问「是否开始打印」；`--yes` 则直接开打。
-   上传期间再来请求只排队，不插队（插进去会让 `wait_ack` 的应答序列错位）。
-   副本在上传收尾（成功/失败/连不上设备）后删除，不占 `%TEMP%`。
-
-退出码只反映**后处理**成没成：交接失败不算失败（文件已经改好了，手动拖进界面也能传），
-否则 Orca 会在导出结束时弹一个吓人的错误框。
-
-### 交接时把窗口抬到前台（`src/raise.rs`）
-
-切片器导出完，用户的眼睛还在切片器上；界面上马上会出现「是否开始打印」这种必须有人
-回答的问题，压在后面等于没有。所以收到新交接时抬一次窗口：
-
-- **只在交接到达那一刻抬**，上传进度、上传完成都不抬（那时用户已经在看了）；
-- **2 秒冷却**：一次导出可能连着交来多个文件（多 plate 每 plate 一次），只抬第一次；
-- 已经在最前面就什么都不做，避免无意义闪烁；
-- 最小化会先还原；
-- 被系统拒绝（Windows 默认禁止后台进程抢前台）时，抬一次 z 序再请求，仍不行就
-  **闪任务栏**——这是系统的「有人找你」语义，不打断别人的输入；
-- 命令行进程在交接前调 `AllowSetForegroundWindow(ASFW_ANY)` 转授许可。它通常由
-  切片器（当时的前台程序）拉起，有这份许可；界面进程没有，不给许可就只能闪任务栏。
-
-不做 `AttachThreadInput` 或常驻 `topmost`：那会永久改变 z 序、干扰别人的输入焦点。
-
-### 连接不阻塞界面，连不上时文件不丢
-
-三处网络 IO 曾经都在 UI 线程里同步跑：
-
-| 调用 | 最坏耗时 |
-|---|---|
-| `TcpStream::connect` 到不可达 IP | 20 秒以上（内核 SYN 重试） |
-| 初次拉机内文件列表（分页 + 心跳） | ≈ 4.7 秒 |
-| UDP 扫描 | 1.2 秒 |
-
-设备关机、或 `--host` 写错时，窗口连重绘都排不上，看起来就是「应用卡死」。
-现在这三者都在后台线程：连接层改用 `connect_timeout`（3 秒硬上限），
-`connect + 初次文件列表` 整体在 `starfish-connect` 线程完成，扫描在
-`starfish-discover` 线程完成；主线程只在定时器里 `try_recv` 收结果，
-一次阻塞 IO 都不做。状态栏会写明「后台进行，界面可继续操作」。
-
-命令行交接遇到「设备还没连上」时也**不再把文件丢掉**：
-
-- 请求留在 `remote_queue`，交接副本保留在 `%TEMP%\starfish-handoff\`；
-- 每 5 秒后台重试一次连接（命令行 `--host` 点名的优先，否则第一台已知设备），
-  状态栏显示重试次数和保留的文件数；
-- 连接一成功，下一个 12ms tick 自动取队列上传，传完照常弹「是否开始打印」，
-  不需要用户再点任何按钮。
-
-手动点「重新扫描」只更新设备列表，不会顺手连上去；只有启动那次扫描会自动连第一台。
-用户主动点「断开」会暂停自动重连（文件仍保留），直到下一次新导出或手动连接为止。
-
-## 上传名从哪来（`src/naming.rs`）
-
-Orca 调后处理脚本时，传的是它**内部的临时文件**，不是你要导出的那个：
-
-```
-%TEMP%\orcaslicer_model\Tue_Nov_10\14_44_36#11596#237\Metadata\.11596.1.gcode.pp
-```
-
-真实导出文件（`Downloads\Part 1 (16)_PETG_6m4s.gcode`）是**脚本退出之后**才由 Orca
-写出来的，脚本里拿不到那个路径。所以直接沿用临时名，界面上就是一串看不懂的点号数字。
-
-### 主路径：切片器自己把名字告诉我们
-
-真机抓的环境快照里，Orca 注入了 661 个 `SLIC3R_*` 变量，其中一个是**最终导出文件的
-完整路径**：
-
-```
-SLIC3R_PP_OUTPUT_NAME = C:\Users\andel\Downloads\Clip S1_PETG_43m31s.gcode
-```
-
-只取 `file_name`，上传名就是 `Clip S1_PETG_43m31s.gcode`。改名模板、材料、时长、
-多 plate、中文名全都不用我们再算一遍。
-
-**只取名字，绝不拿这个路径去读文件**：脚本还在跑，那个文件此刻并不存在，内容仍然
-必须走上面 `stage_copy` 落地的副本。名字里有中文时，界面在上传前按固件限制转成
-ASCII（`sanitize_name`）——设备端的文件名是裸单字节，写中文会变乱码。
-
-### 兜底：按命名模板反推
-
-环境变量缺失时（手工调用、别的切片器、Orca 改了语义），退回从会话目录反推：
-
-| 来源 | 内容 |
-|---|---|
-| `<会话>/origin.txt` | 原始 3MF 路径 → `input_filename_base` = `Part 1 (16)` |
-| `<会话>/_temp_<n>.config` | `filename_format` 模板 + `filament_type` = `PETG` |
-| gcode 头 | `; estimated printing time (normal mode) = 6m 4s` → `print_time` = `6m4s` |
-
-模板是**读出来的**（`{input_filename_base}_{filament_type[initial_tool]}_{print_time}.gcode`），
-不是硬编码，所以你在 Orca 里改命名规则也能跟上。`print_time` 用 Orca 自己的短格式
-（`6m4s` / `1h21m`，不带前导零），和 `header::fmt_duration` 的 `6m04s` 不是一回事。
-
-任一环缺失就退回 `origin.txt` 的 3MF 名 + `.gcode`；再不行才用原始临时名（去掉 `.pp`）。
-**宁可退化，也不拼一个看着像真的、实际对不上的名字。**
-
-这条兜底**并不稳定**：真机上见过多 plate 导出时会话目录里根本没有 `origin.txt`，
-两道推导同时失败，界面只能拿到 `11596.2.gcode`。这正是把环境变量提为主路径的原因。
-
-## 上传名一律带时间戳
-
-设备端**同名不覆盖**：新内容传上去，`开始打印` 还是上一次的刀路，界面上看文件列表、大小、
-进度全都"正常"——这种错极难发现。所以每次上传都在扩展名前插一个本地时间戳：
-
-```
-Clip S1_PETG_43m31s.gcode
-  → Clip S1_PETG_43m31s_20261111-133822.gcode
-```
-
-名字里的 `43m31s` 是**打印时长**，不是时间戳；同名重切时它一模一样，所以必须再缀
-一个我们自己的秒级时间戳。
-
-- 位置在 `prepare_upload`（所有上传路径的唯一出口：命令行交接、拖入、文件选择器都走它）；
-- 戳是本地时间 `YYYYMMDD-HHmmss`，**精确到秒**；同一秒内连续上传（多 plate）补 `-2` / `-3`，
-  换一秒重置为 1，避免又撞回同名；
-- **点前缀一律去掉**：设备端把 `.` 开头的文件当隐藏文件，列表接口不列出来 ——
-  传上去了也看不见、选不到去打印，等于白传。切片器的中间文件恰好是
-  `.11596.1.gcode` 这种形状，所以 `sanitize_name`、`naming::stamp`、`handoff::strip_pp`
-  三处都去点；
-- 名字超过设备端 64 字节上限时**掐主体保时间戳和扩展名**（`naming::stamp`）；
-- 状态栏显示 `原名 → 上传名 …`，免得误以为时间戳是切片器起的名字；
-- 交接落地的副本（`%TEMP%\starfish-handoff\…`）仍用不带时间戳的干净名字，
-  只有传给设备的那个名字加戳。
-
-## 运行日志 / 环境变量采集（`src/log.rs`）
-
-切片器的后处理脚本文档提到：除了 argv 里的 G-code 路径，很多打印配置是**通过环境变量**
-传进来的（`SLIC3R_*` 之类）。具体有哪些、叫什么、值长什么样，只有真跑一次才知道。
-
-抓到的一份真机快照里共 718 个变量、其中 661 个是 `SLIC3R_*`，并确认了
-`SLIC3R_PP_OUTPUT_NAME` 就是最终导出文件的完整路径 —— **上传名现在以它为主路径**
-（见「上传名从哪来」），`origin.txt` 反推整体降级为兜底。
-
-日志采集保留下来用于排查以后的切片器版本差异：每次被后处理脚本调起时，把当时的
-环境快照追加到
-
-```
-%LOCALAPPDATA%\starfish-control\starfish-control.log
-```
-
-非 Windows 是 `$TMPDIR/starfish-control/`；`STARFISH_LOG_DIR` 可改目录；超过 512 KB
-把旧内容轮转成 `starfish-control.prev.log`。
-
-一条记录先给出本地时间、pid、exe、**cwd**、完整 argv 和目标文件（Orca 的工作目录和 exe
-所在目录不是一回事，这个很关键），然后分三节列变量：
-
-| 节 | 内容 |
-|---|---|
-| 切片器注入的变量 | `SLIC3R_` / `ORCA*` / `BAMBU*` / `PRUSA*` 前缀 |
-| 其它可能含输出文件名/路径的变量 | 名字带 `OUTPUT` / `GCODE` / `EXPORT` / `FILENAME` / `PP_` 等；故意排除 `PATH`、`USERNAME` 这类每次都有的系统变量 |
-| 全部环境变量 | 按名称排序，方便和上一次导出逐行对照 |
-
-值里的换行转义成 `\n`，保证一行一个变量；单个值超过 4096 字符截断；名字带
-`TOKEN` / `PASSWORD` / `API_KEY` 等的**值默认打码**（日志是明文落盘的）。
-确实要看全值时设 `STARFISH_LOG_FULL_ENV=1`，只在排查时开。
-
-只验证日志链路本身（不做后处理、不交接、不开窗口、**不碰设备**）：
+1. **Visual Studio Build Tools**（勾「使用 C++ 的桌面开发」）→ 提供 MSVC 的 `cl.exe` / `link.exe`；
+2. GNU 路线：`rustup target add x86_64-pc-windows-gnu` + MinGW-w64，
+   构建时加 `--target x86_64-pc-windows-gnu`。
 
 ```bash
-starfish-control.exe --dump-env
+cargo build --release                # 产物：target/release/starfish-control.exe
+cargo run                            # GUI，自动发现设备
+cargo run -- --host 192.168.0.227    # 直接连指定设备
 ```
 
-在 Orca 里正常导出一次后打开上面那个 log 看最后一条即可。日志写入失败只在 stderr
-留一行提示，**不改后处理退出码**，也不会拖慢切片器。
+发布时只拷这一个 exe 就行，字体已经编进二进制。
 
-## 构建与测试状态
+## 接到 OrcaSlicer（推荐用法）
 
-- `cargo build --release` / `cargo test --release` 在本机（MSVC + VS Build Tools）通过，
-  63 个单测通过、1 个 `ignored`（`header::real_gcode` 需要 `SF_GCODE` 指向真实切片文件）。
-- `makepad-widgets` 走 git `dev` 分支，`Cargo.lock` 已锁定 commit。
-- 本工程自身**零编译警告**：尚未接界面的协议命令与解析模块都就地标了
-  `#[allow(dead_code)]` 并写明理由（见各文件注释），不是靠全局 `allow` 糊过去。
-- `cargo fmt --check` 通过。
-
-## 字体内嵌（分发必读）
-
-**exe 是自足的单文件，不需要带字体目录，也不依赖系统字体。**
-
-Makepad 的字体是按资源路径读文件的：`register_crate_resource_path` 在**编译期**就把
-`makepad_widgets/resources/xxx.ttf` 解析成了**本机 cargo 源码树里的绝对路径**
-（`~/.cargo/git/checkouts/makepad-*/…/widgets/resources/xxx.ttf`）。普通 `cargo build`
-出来的 exe 运行时按那个绝对路径找文件，找不到就把字面判死：
+OrcaSlicer → 打印设置 → 输出 → **后处理脚本**，填 exe 的完整路径：
 
 ```
-[E] font "…/widgets/resources/IBMPlexSans-Text.ttf" (member ibm_plex_text)
-    is not packaged with this app, so its text will show as boxes
+"C:\path\to\starfish-control.exe"
 ```
 
-表现就是「有图形块、但没有文字」。所以 `src/fonts.rs` 把 ttf 用 `include_bytes!` 编进
-二进制，并在启动时填回脚本资源表（`cx.script_data.resources`）：Makepad 按路径读文件失败后
-会回落到资源表里已 `Loaded` 的数据，正好就是这几份。代价是 exe 约 +19 MB（主要是中文字面）。
+导出时 Orca 会以 `starfish-control.exe <gcode路径>` 调用它，正好对应本程序的
+「后处理 → 交给界面 → 退出」，**切片过程不会被上传拖住**。
 
-内嵌的字面都在 `assets/fonts/`：
+常用参数（拼在脚本路径后面）：
 
-| 文件 | 用途 | 大小 |
-|---|---|---|
-| `IBMPlexSans-Text.ttf` | 拉丁正文（粗体/斜体也复用它） | 0.17 MB |
-| `NotoSans-Regular.ttf` | 拉丁兜底 | 0.19 MB |
-| `jetbrains_mono_variable.ttf` | 界面符号 | 0.29 MB |
-| `LiberationMono-Regular.ttf` | 等宽（代码） | 0.10 MB |
-| `fa-solid-900.ttf` | 图标 | 0.41 MB |
-| `LXGWWenKaiRegular.ttf` | **中文**（粗体/emoji 成员也复用它） | 18.19 MB |
+| 参数 | 作用 |
+|---|---|
+| `--yes` / `-y` | 跳过「是否开始打印」，上传完直接开打 |
+| `--host 192.168.0.227` | 固定连哪台设备，不用每次扫描 |
+| `--rewrite` | 把改写后的头部写回原文件（留 `.orca-original` 备份） |
+| `--material 黑色-PETG` | 覆盖写进头部的材料名 |
 
-换字体的办法：把新 ttf 放进 `assets/fonts/`，在 `src/fonts.rs` 的 `face()` 里把文件名映射过去，
-`cargo build --release` 即可（真正要改的是「成员名 → 字节」这张表）。
+不接后处理也能用：把 `.gcode` 拖进窗口，或点「从本地选择」。
 
-- 中文用的是 **LXGW WenKai**，OFL 1.1 授权，可随二进制再分发。
-- 刻意**没有**内嵌 `NotoColorEmoji.ttf`（10 MB）：界面里不用 emoji，`⚠` 之类已换成「注意」。
-- 验证方式（模拟别人的机器）：把 `~/.cargo/git/checkouts/makepad-*/…/widgets/resources`
-  临时改名，再跑 exe —— 文字照常显示、日志里没有 `not packaged` 就是对的。
+## 使用提示
 
-## 目录结构
-
-```
-super3d-a3-remote-ui/            # 仓库名；可执行文件仍叫 starfish-control.exe
-  Cargo.toml
-  assets/fonts/        # 内嵌字体（见上）
-  src/
-    main.rs            # 入口，app_main!(App, configure: …) —— 后处理模式在这里先拦下
-    cli.rs             # 命令行参数
-    handoff.rs         # 命令行侧：后处理 → 交给界面 → 退出（含单测）
-    ipc.rs             # 单实例本地服务（127.0.0.1:51721，含单测）
-    naming.rs          # 环境变量取真实导出名（模板反推兜底）+ 秒级时间戳（含单测）
-    raise.rs           # 交接时把窗口抬到前台（抬不动就闪任务栏）
-    log.rs             # 落盘运行日志 / 后处理进程环境变量快照（含单测）
-    fonts.rs           # 把内嵌字体填进脚本资源表（换机器不变方块）
-    eta.rs             # 剩余时间（有切片器总时长就用它，没有才退到实测斜率）
-    app.rs             # App / MatchEvent / AppMain / Splash UI（连接后台化 + 待传队列）
-    protocol/
-      mod.rs
-      frame.rs         # 帧编解码（已用抓包验证，含单测）
-      status.rs        # 39 字节状态解析（含单测）
-      connection.rs    # UDP 发现 + TCP 后台线程 + 通道桥 + 命令构造（connect_timeout 3s 上限）
-      header.rs        # G-code 头部重写（缩略图/时长/键值归一化，含单测）
-      gcode.rs         # G-code 解析（预览用，含单测）
-      sacp.rs          # SACP 占位（本设备不使用）
-```
-
-## 协议约束提醒
-
-starfish-net **没有"执行 G-code 字符串"的命令**。G-code 只能作为文件经 cmd 9 上传、
-再经 cmd 11/1 开始打印。因此"命令行直接上传 Gcode"实现为：命令行做后处理 → 交给界面
-→ 上传文件 → 弹出预览 → 确认（或 `--yes` 直接）开始打印。这与需求体验一致。
+- **连不上设备时文件不会丢**：请求留在队列里，交接副本保留在
+  `%TEMP%\starfish-handoff\`，每 5 秒后台重连一次；连上后自动上传并弹
+  「是否开始打印」，不用回切片器重新导出。
+- **上传名会自动加时间戳**，例如
+  `Clip S1_PETG_43m31s_20261111-133822.gcode`。设备端同名不覆盖，不加戳会出现
+  「传了新文件、打的还是老刀路」这种极难发现的问题。
+- **手动点「断开」会暂停自动重连**（文件仍保留），直到下一次导出或手动连接，
+  免得刚断开又被连回去。
+- **日志**在 `%LOCALAPPDATA%\starfish-control\starfish-control.log`，
+  可用 `STARFISH_LOG_DIR` 改目录。`starfish-control.exe --dump-env` 只抓一份
+  环境快照就退出，不开窗口、不碰设备。
+- **导出时不会弹错误框**：退出码只反映后处理成没成，交接失败不算失败
+  （文件已经改好了，手动拖进界面也能传）。
 
 ## 已知问题
 
-- 机内**删除**的文件名解析还没验证：实测出现过「删一个掉好几个」，确认弹窗里也写着这句。
-  要动删除之前先刷新列表、并对着一台不重要的设备试。
-- 暂停 / 恢复 / 停止打印：`Connection::print_pause / print_resume / print_stop` 已实现，
-  界面还没有按钮（打印中只能急停）。
-- 单轴回零：`Connection::control_home_axis` 已实现，界面未接。
+- 机内**删除**的文件名解析还没验证：实测出现过「删一个掉好几个」。删除前先刷新
+  列表，并对着一台不重要的设备试。
+- 暂停 / 恢复 / 停止打印：协议命令已实现，界面还没有按钮（打印中只能急停）。
+- 单轴回零：命令已实现，界面未接。
+
+## 更多细节
+
+实现层面的东西——协议报文、Orca 交接时序、上传名怎么反推、字体内嵌原理、
+目录结构——都在 [`docs/调研与设计.md`](docs/调研与设计.md)。
+
+## 版权
+
+代码以 **MIT** 授权，全文见 [LICENSE](LICENSE)。Copyright (c) 2026 andelf。
+
+`assets/fonts/` 下的字体**不适用 MIT**，各自按其原授权分发（均为 SIL OFL 1.1
+或同等可再分发协议）：LXGW WenKai（中文）、IBM Plex Sans、Noto Sans、
+JetBrains Mono、Liberation Mono、Font Awesome Free。
