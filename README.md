@@ -44,6 +44,11 @@ cargo run -- --host 192.168.0.227    # 直接连指定设备
 
 发布时只拷这一个 exe 就行，字体已经编进二进制。
 
+GitHub Actions 会在推送到 `main`、创建针对 `main` 的 PR，或手动触发时自动构建
+Windows x64 版本；在对应 workflow run 的 **Artifacts** 区域可下载
+`starfish-control-windows-x86_64`。推送形如 `v1.0.0` 的标签还会自动创建 GitHub
+Release，并将 `starfish-control.exe` 附加为发布制品。
+
 ## 接到 OrcaSlicer（推荐用法）
 
 OrcaSlicer → 打印设置 → 输出 → **后处理脚本**，填 exe 的完整路径：
