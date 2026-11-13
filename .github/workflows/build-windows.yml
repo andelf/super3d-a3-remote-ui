@@ -81,7 +81,7 @@ jobs:
           name: starfish-control-windows-x86_64
           path: dist
       - name: Publish nightly release
-        uses: andelf/nightly-release@main
+        uses: andelf/nightly-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
