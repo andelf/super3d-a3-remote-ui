@@ -4,8 +4,25 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # 只有构建输入变化才跑：改文档/截图不触发，省掉一次无意义的 5 分钟构建，
+    # 也不会把 nightly 刷成一个没变化的版本。
+    # tag push 不受路径过滤影响（GitHub 文档：Path filters are not evaluated
+    # for pushes of tags），所以正式版发布照旧。
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "assets/**"
+      - ".github/workflows/**"
   pull_request:
     branches: [main]
+    # 与上面保持同一份清单；将来加目录记得两处一起改。
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "assets/**"
+      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
@@ -15,14 +32,14 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
       - name: Build release executable
         run: cargo build --locked --release --target x86_64-pc-windows-msvc
       - name: Upload executable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: starfish-control-windows-x86_64
           path: target/x86_64-pc-windows-msvc/release/starfish-control.exe
@@ -37,7 +54,7 @@ jobs:
       contents: write
     steps:
       - name: Download executable artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: starfish-control-windows-x86_64
           path: dist
@@ -59,7 +76,7 @@ jobs:
       contents: write
     steps:
       - name: Download executable artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: starfish-control-windows-x86_64
           path: dist

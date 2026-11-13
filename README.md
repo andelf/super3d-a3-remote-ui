@@ -48,6 +48,9 @@ GitHub Actions 会在推送到 `main`、创建针对 `main` 的 PR，或手动�
 Windows x64 版本；在对应 workflow run 的 **Artifacts** 区域可下载
 `starfish-control-windows-x86_64`。
 
+只有构建输入变化才会触发（`src/`、`Cargo.toml`、`Cargo.lock`、`assets/`、
+workflow 自身）；改 README、文档、截图不会跑 CI，也不会产生新的 nightly。
+
 发布有两条通道：
 
 - **nightly（滚动预发布）**：每次 push 到 `main` 都会更新
