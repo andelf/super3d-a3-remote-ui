@@ -71,5 +71,10 @@ jobs:
           tag_name: nightly
           name: 'Nightly Build @ $$'
           prerelease: true
+          # 让人一眼看出这个 nightly 是哪次提交编出来的。
+          body: |
+            由 GitHub Actions 自动构建，对应提交 `${{ github.sha }}`。
+
+            ${{ github.event.head_commit.message }}
           files: |
             dist/starfish-control.exe
