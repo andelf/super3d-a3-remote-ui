@@ -46,3 +46,30 @@ jobs:
         with:
           generate_release_notes: true
           files: dist/starfish-control.exe
+
+  # 每次 push 到 main 都更新一个滚动预发布版本（tag 固定为 nightly）。
+  # 用 andelf/nightly-release 而不是再发正式版：它只保留最新一次构建的产物，
+  # 同名资产先删后传，不会让 Releases 页面越堆越多；提交没变时
+  # only-when-changed（默认 true）直接跳过。
+  nightly:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download executable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: starfish-control-windows-x86_64
+          path: dist
+      - name: Publish nightly release
+        uses: andelf/nightly-release@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: nightly
+          name: 'Nightly Build @ $$'
+          prerelease: true
+          files: |
+            dist/starfish-control.exe

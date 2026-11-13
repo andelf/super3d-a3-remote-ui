@@ -46,8 +46,18 @@ cargo run -- --host 192.168.0.227    # 直接连指定设备
 
 GitHub Actions 会在推送到 `main`、创建针对 `main` 的 PR，或手动触发时自动构建
 Windows x64 版本；在对应 workflow run 的 **Artifacts** 区域可下载
-`starfish-control-windows-x86_64`。推送形如 `v1.0.0` 的标签还会自动创建 GitHub
-Release，并将 `starfish-control.exe` 附加为发布制品。
+`starfish-control-windows-x86_64`。
+
+发布有两条通道：
+
+- **nightly（滚动预发布）**：每次 push 到 `main` 都会更新
+  [Releases](https://github.com/andelf/super3d-a3-remote-ui/releases) 上的 `nightly`
+  预发布版本。tag 固定为 `nightly`，始终指向最新一次构建，旧产物会被替换掉，
+  不留历史堆积。想试最新代码就下这个。
+- **正式版**：推送形如 `v1.0.0` 的标签，自动创建对应 Release，附件是
+  `starfish-control.exe`，更新说明由 commit 列表自动生成。
+
+两者都是公开可直接下载的，不需要登录 GitHub。
 
 ## 接到 OrcaSlicer（推荐用法）
 
